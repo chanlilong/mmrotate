@@ -1,0 +1,39 @@
+# Smoke test of cradiov4-h-comer_rtmdet-3x-dota_ms.yaml on synthetic data:
+#   python tools/data/dota/make_proxy_dota.py --out data/proxy_dota
+#   python tools/train.py configs/cradio/cradiov4-h-comer_rtmdet-proxy.yaml
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+train_dataloader:
+  batch_size: 2
+  num_workers: 2
+  dataset:
+    data_root: data/proxy_dota/
+val_dataloader:
+  num_workers: 2
+  dataset:
+    data_root: data/proxy_dota/
+test_dataloader:
+  num_workers: 2
+  dataset:
+    data_root: data/proxy_dota/
+
+train_cfg:
+  max_epochs: 12
+  val_interval: 12
+param_scheduler:
+  - type: LinearLR
+    start_factor: 1.0e-3
+    by_epoch: false
+    begin: 0
+    end: 50
+  - type: CosineAnnealingLR
+    eta_min: 1.25e-5
+    begin: 6
+    end: 12
+    T_max: 6
+    by_epoch: true
+    convert_to_iter_based: true
+
+default_hooks:
+  logger: {type: LoggerHook, interval: 5}
+  checkpoint: {type: CheckpointHook, interval: 12, max_keep_ckpts: 1}

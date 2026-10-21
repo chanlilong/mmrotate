@@ -1,0 +1,15 @@
+# Baseline: plain frozen C-RADIOv4-H (no CoMer adapter). Block outputs at
+# stride 16 are resampled parameter-free to strides 8 / 16 / 32.
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  backbone:
+    _delete_: true
+    type: CRADIOv4
+    checkpoint: /mnt/zfs/models/nvidia/C-RADIOv4-H
+    frozen: true
+    out_indices: [15, 23, 31]
+    out_strides: [8, 16, 32]
+
+train_dataloader:
+  batch_size: 4
