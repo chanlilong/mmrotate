@@ -85,3 +85,8 @@ model:
 train_dataloader:
   batch_size: 2
   num_workers: 4
+
+# bf16 mixed precision: ~3x faster than fp32 for the ViT-H + CoMer backbone.
+optim_wrapper:
+  type: AmpOptimWrapper
+  dtype: bfloat16

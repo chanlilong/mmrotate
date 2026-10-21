@@ -53,6 +53,9 @@ def test_config_contents(cfg_file: str) -> None:
     assert cfg.model.bbox_head.anchor_generator.strides == strides
     assert len(cfg.model.neck.in_channels) == len(strides)
     assert '_delete_' not in cfg.model
+    assert cfg.optim_wrapper.type == 'AmpOptimWrapper'
+    assert cfg.optim_wrapper.dtype == 'bfloat16'
+    assert cfg.optim_wrapper.optimizer.type == 'AdamW'
 
 
 def _build(cfg_file: str, device: str) -> torch.nn.Module:
