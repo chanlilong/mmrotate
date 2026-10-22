@@ -11,10 +11,11 @@ from mmrotate.registry import MODELS
 from mmrotate.testing import demo_mm_inputs, get_detector_cfg
 from mmrotate.utils import register_all_modules
 
-CONFIGS = [
-    'cradio/cradiov4-h-vitdet_rtmdet-3x-dota_ms.yaml',
-    'cradio/cradiov4-h-vitdet_rtmdet-proxy.yaml',
-]
+CONFIGS = {
+    'cradio/cradiov4-h-vitdet_rtmdet-3x-dota_ms.yaml': [8, 16, 32],
+    'cradio/cradiov4-h-vitdet_rtmdet-p2-3x-dota_ms.yaml': [4, 8, 16, 32],
+    'cradio/cradiov4-h-vitdet_rtmdet-proxy.yaml': [8, 16, 32],
+}
 TINY_DIM = 32
 TINY_VIT = dict(embed_dim=TINY_DIM, depth=4, num_heads=2, max_img_size=256, with_cp=True)
 
@@ -30,7 +31,7 @@ def _tiny_detector_cfg(cfg_file: str) -> ConfigDict:
     return model
 
 
-@pytest.mark.parametrize('cfg_file', CONFIGS)
+@pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_config_contents(cfg_file: str) -> None:
     cfg = Config.fromfile(f'configs/{cfg_file}')
     model = cfg.model
@@ -44,7 +45,7 @@ def test_config_contents(cfg_file: str) -> None:
     assert 'interaction_indexes' not in model.backbone
     assert model.neck.type == 'ViTDetSimpleFPN'
     assert model.neck.in_channels == 1280
-    assert model.neck.out_strides == [8, 16, 32]
+    assert model.neck.out_strides == CONFIGS[cfg_file]
     assert model.neck.norm_cfg.type == 'LN2d'
     assert 'num_csp_blocks' not in model.neck
     assert model.bbox_head.type == 'RotatedRTMDetSepBNHead'
@@ -73,7 +74,7 @@ def _build(cfg_file: str, device: str) -> torch.nn.Module:
     return detector
 
 
-@pytest.mark.parametrize('cfg_file', CONFIGS)
+@pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_forward_loss(cfg_file: str) -> None:
     # mmcv's diff_iou_rotated (RotatedIoULoss) only has a CUDA kernel.
     detector = _build(cfg_file, 'cuda').train()
@@ -89,7 +90,7 @@ def test_forward_loss(cfg_file: str) -> None:
     assert detector.neck.stages[0][1].weight.grad is not None
 
 
-@pytest.mark.parametrize('cfg_file', CONFIGS)
+@pytest.mark.parametrize('cfg_file', list(CONFIGS))
 @pytest.mark.parametrize('device', ['cpu', 'cuda'])
 def test_forward_predict(cfg_file: str, device: str) -> None:
     detector = _build(cfg_file, device).eval()
@@ -102,7 +103,7 @@ def test_forward_predict(cfg_file: str, device: str) -> None:
 
 
 def test_build_optim_wrapper() -> None:
-    cfg_file = CONFIGS[0]
+    cfg_file = next(iter(CONFIGS))
     cfg = Config.fromfile(f'configs/{cfg_file}')
     detector = _build(cfg_file, 'cpu')
     optim_cfg = cfg.optim_wrapper

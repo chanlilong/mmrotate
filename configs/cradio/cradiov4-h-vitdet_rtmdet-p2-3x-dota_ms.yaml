@@ -1,0 +1,11 @@
+# P2 variant of cradiov4-h-vitdet_rtmdet-3x-dota_ms.yaml: the simple feature
+# pyramid also emits stride 4 (deconv -> LN -> GELU -> deconv) for very small
+# objects. Counterpart of cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml.
+_base_: ./cradiov4-h-vitdet_rtmdet-3x-dota_ms.yaml
+
+model:
+  neck:
+    out_strides: [4, 8, 16, 32]
+  bbox_head:
+    anchor_generator:
+      strides: [4, 8, 16, 32]
