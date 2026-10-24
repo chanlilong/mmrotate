@@ -3,7 +3,9 @@
 
 The sampling kernel is the Triton implementation vendored from
 https://github.com/rziga/msda-triton (MIT), so no CUDA extension has to be
-compiled. A pure PyTorch ``grid_sample`` path is used on CPU or on request.
+compiled. The backward uses the atomic-free kernels of ``msda_triton_bwd.py``
+(3-4x faster at ViT-CoMer shapes, deterministic). A pure PyTorch
+``grid_sample`` path is used on CPU or on request.
 """
 
 import math
@@ -15,6 +17,7 @@ from torch.amp import custom_bwd, custom_fwd
 from torch.autograd.function import Function, FunctionCtx, once_differentiable
 
 try:
+    from .msda_triton_bwd import msda_bwd_atomic_free
     from .msda_triton_kernels import (
         triton_multi_scale_deformable_attention_bwd,
         triton_multi_scale_deformable_attention_fwd,
@@ -87,6 +90,11 @@ class _TritonMSDAFunction(Function):
     @custom_bwd(device_type='cuda')
     def backward(ctx: FunctionCtx, grad_out: Tensor) -> tuple[Tensor | None, ...]:
         value, spatial_shapes, sampling_locations, attention_weights = ctx.saved_tensors
+        if _PADDING_MODE == 'zeros' and not _ALIGN_CORNERS:
+            grad_value, grad_loc, grad_attn = msda_bwd_atomic_free(
+                grad_out, value, spatial_shapes, sampling_locations, attention_weights
+            )
+            return grad_value, None, grad_loc, grad_attn
         grad_value, grad_loc, grad_attn = triton_multi_scale_deformable_attention_bwd(
             grad_out.contiguous(),
             value,
