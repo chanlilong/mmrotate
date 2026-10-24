@@ -4,13 +4,20 @@
 
 | component | version |
 | --- | --- |
-| base | `pytorch/pytorch:2.14.1-cuda13.0-cudnn9-devel` (Ubuntu 24.04, system Python 3.12, no conda) |
-| mmcv | 2.1.0, compiled from source with CUDA ops |
+| base | `pytorch/pytorch:2.14.1-cuda13.0-cudnn9-runtime` (Ubuntu 24.04, system Python 3.12, no conda) |
+| mmcv | 2.1.0, compiled from source with CUDA ops (in a `-devel` builder stage) |
 | mmdet / mmengine | 3.3.0 / latest `<1.0` |
 | mmrotate | this repo, editable install at `/mmrotate` |
 
 CUDA 13.0 is the newest toolkit that driver 580 supports natively, so the `+PTX` JIT fallback also
 works. CUDA 13 supports Turing (sm_75) and newer only.
+
+The build has two stages. The `builder` stage, on the `-devel` base (~22 GB, includes `nvcc`),
+compiles mmcv into a wheel. The final image installs that wheel on the `-runtime` base (~6 GB), which
+makes it about 16 GB smaller. The final image installs `build-essential`, because Triton (used by
+some torch 2.14 ops, `torch.compile` and this repo's kernels) compiles its kernel launchers with the
+host C compiler at run time. It has **no CUDA toolkit**: there's no `nvcc`, so CUDA extensions can't be
+compiled inside the container. If you need that, switch the final `FROM` to the `-devel` base.
 
 ## Build
 
@@ -59,9 +66,10 @@ The repo is bind-mounted over `/mmrotate`, so edits made on the host take effect
   `mmcv_patches/0001-build-with-cxx20.patch` switches it to C++20.
 - **No GPU at build time.** `FORCE_CUDA=1` and `MMCV_WITH_OPS=1` force the CUDA build anyway.
 
-The build then **fails** unless `mmcv.ops.get_compiling_cuda_version()` matches torch's CUDA, the
-rotated-box ops load from `mmcv._ext`, and `cuobjdump` finds kernels for every arch in
-`TORCH_CUDA_ARCH_LIST`. Any source fixes mmcv needs for newer torch/CUDA go in `docker/mmcv_patches/`.
+The build then **fails** unless `cuobjdump` finds kernels for every arch in `TORCH_CUDA_ARCH_LIST`
+(checked in the builder), the runtime base has exactly the torch stack the wheel was built against,
+`mmcv.ops.get_compiling_cuda_version()` matches torch's CUDA, and the rotated-box ops load from
+`mmcv._ext`. Any source fixes mmcv needs for newer torch/CUDA go in `docker/mmcv_patches/`.
 
 Other defaults: `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` (torch >= 2.6 changed the `torch.load` default,
 which breaks mmengine checkpoint loading), and `/opt/constraints.txt` pins the image's torch stack so
