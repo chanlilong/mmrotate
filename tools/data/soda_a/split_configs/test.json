@@ -1,0 +1,28 @@
+{
+  "nproc": 16,
+  "img_dirs": [
+    "/mnt/4TB/Datasets/soda-a/dota/test/images/"
+  ],
+  "ann_dirs": [
+    "/mnt/4TB/Datasets/soda-a/dota/test/labelTxt/"
+  ],
+  "sizes": [
+    800
+  ],
+  "gaps": [
+    150
+  ],
+  "rates": [
+    1.0
+  ],
+  "img_rate_thr": 0.6,
+  "iof_thr": 0.7,
+  "no_padding": false,
+  "padding_value": [
+    104,
+    116,
+    124
+  ],
+  "save_dir": "/mnt/4TB/Datasets/soda-a/split_800/test/",
+  "save_ext": ".jpg"
+}
