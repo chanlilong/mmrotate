@@ -1,0 +1,11 @@
+# Phase 1 ablation / ViT-CoMer without the CNN -> ViT injector (CTI_toV + MRFP
+# off). The frozen ViT then only sees the image, so no gradient flows through
+# it and it runs autograd-free like ViTDet; the CNN branch still extracts from
+# the ViT (CTI_toC, CNN-side deformable attention, extra CTIs). Everything
+# else is identical to the full CoMer run.
+_base_: ./vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    use_CTI_toV: false
+    vit_with_cp: false  # nothing to recompute: the ViT has no autograd graph

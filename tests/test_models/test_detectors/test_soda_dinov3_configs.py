@@ -36,7 +36,8 @@ def _sample(h: int, w: int) -> DetDataSample:
 
 def test_configs_found() -> None:
     assert 'vits-dinov3-comer_rtmdet-p2-6e-soda.yaml' in CONFIGS
-    assert len(CONFIGS) == 5
+    assert 'vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml' in CONFIGS
+    assert len(CONFIGS) == 6
 
 
 @pytest.mark.parametrize('name', CONFIGS)

@@ -69,7 +69,7 @@ max_epochs: &max_epochs 6
 train_cfg:
   type: EpochBasedTrainLoop
   max_epochs: *max_epochs
-  val_interval: 2
+  val_interval: 1
 val_cfg: {type: ValLoop}
 test_cfg: {type: TestLoop}
 
@@ -97,7 +97,7 @@ optim_wrapper:
 
 default_hooks:
   logger: {type: LoggerHook, interval: 50}
-  checkpoint: {type: CheckpointHook, interval: 2, max_keep_ckpts: 1, save_last: true}
+  checkpoint: {type: CheckpointHook, interval: 1, max_keep_ckpts: 1, save_last: true}
 
 env_cfg:
   cudnn_benchmark: true

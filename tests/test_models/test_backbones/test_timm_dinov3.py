@@ -67,6 +67,26 @@ def test_comer_p2_shapes_and_freeze() -> None:
     assert not any(p.requires_grad for p in model.vit.parameters())
 
 
+def test_comer_without_injector_keeps_vit_out_of_autograd() -> None:
+    model = TimmViTCoMer(
+        VITS,
+        conv_inplane=16,
+        norm_cfg=dict(type='BN'),
+        out_indices=(0, 1, 2, 3),
+        use_CTI_toV=False,
+        vit_with_cp=True,  # must be a no-op: the ViT input never needs grads
+        msda_backend='pytorch',
+    ).train()
+    assert not any('cti_tov' in n or 'mrfp' in n for n, _ in model.named_parameters())
+    vit_out = []
+    model.vit.blocks[-1].register_forward_hook(lambda m, i, o: vit_out.append(o))
+    outs = model(torch.randn(1, 3, 112, 144))
+    assert len(vit_out) == 1 and not vit_out[0].requires_grad
+    sum(o.sum() for o in outs).backward()
+    frozen_grad, trainable_grad = _grads(model)
+    assert not frozen_grad and trainable_grad
+
+
 def test_feature_backbone_shapes_and_freeze() -> None:
     model = TimmFeatureBackbone('convnext_tiny').train()
     assert not model.model.training

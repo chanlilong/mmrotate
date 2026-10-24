@@ -25,7 +25,7 @@ SODA-A, converted to split DOTA format by the tools in `tools/data/soda_a/` (see
 | split | role | patches |
 |---|---|---|
 | train | training, non-empty patches only | 20,720 |
-| val_mini (every 8th val scene) | learning curves, every 2 epochs | 2,588 |
+| val_mini (every 8th val scene) | learning curves, every epoch (every 2 for ViTDet and ConvNeXt-T, which ran first) | 2,588 |
 | test (fully annotated) | final numbers | 25,012 |
 
 About 98% of the objects are under 32 px (√area). On the train patches √(wh) has a mean of 16.6 px, a median of

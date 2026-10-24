@@ -7,6 +7,7 @@
 #
 #   tools/soda_dinov3/run_experiments.sh bench    # cost / params table
 #   tools/soda_dinov3/run_experiments.sh phase1   # ViTDet, ConvNeXt-T, CoMer
+#   tools/soda_dinov3/run_experiments.sh noinj    # CoMer without CNN->ViT injector
 #   tools/soda_dinov3/run_experiments.sh seeds    # seed-1 repeats (noise)
 #   tools/soda_dinov3/run_experiments.sh phase2   # NWD-RKA / NWD-DSL-RKA
 #   tools/soda_dinov3/run_experiments.sh collect  # markdown results
@@ -22,6 +23,7 @@ CFG=configs/soda_dinov3
 
 VITDET=$CFG/vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml
 COMER=$CFG/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+COMER_NOINJ=$CFG/vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml
 CONVNEXT=$CFG/convnext-t-dinov3_rtmdet-p2-6e-soda.yaml
 NWD_RKA=$CFG/vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml
 NWD_DSL_RKA=$CFG/vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
@@ -44,21 +46,33 @@ train_test() {
         return
     fi
     echo "[train] $name ($(date))"
-    in_docker python tools/train.py "$cfg" --work-dir "$wd" \
-        --cfg-options randomness.seed="$seed"
+    # Retry a crashed training (e.g. an intermittent native segfault) from the
+    # latest checkpoint; --resume starts from scratch when there is none yet.
+    local attempt rc resume=()
+    for attempt in 1 2 3; do
+        in_docker python tools/train.py "$cfg" --work-dir "$wd" "${resume[@]}" \
+            --cfg-options randomness.seed="$seed" && break
+        rc=$?
+        echo "[retry] $name: train exited with $rc (attempt $attempt, $(date))"
+        [[ $attempt == 3 ]] && return "$rc"
+        resume=(--resume)
+    done
     echo "[test] $name ($(date))"
     in_docker python tools/test.py "$cfg" "$wd/epoch_6.pth" --work-dir "$wd/test"
 }
 
 case ${1:-} in
     bench)
-        in_docker python tools/soda_dinov3/bench.py "$VITDET" "$CONVNEXT" "$COMER" \
+        in_docker python tools/soda_dinov3/bench.py "$VITDET" "$CONVNEXT" "$COMER" "$COMER_NOINJ" \
             --out "$WORK/bench.json"
         ;;
     phase1)
         train_test "$VITDET"
         train_test "$CONVNEXT"
         train_test "$COMER"
+        ;;
+    noinj)
+        train_test "$COMER_NOINJ"
         ;;
     seeds)
         train_test "$VITDET" 1
@@ -72,7 +86,7 @@ case ${1:-} in
         in_docker python tools/soda_dinov3/collect_results.py "$WORK"
         ;;
     *)
-        sed -n '3,15p' "$0"
+        sed -n '3,16p' "$0"
         exit 1
         ;;
 esac
