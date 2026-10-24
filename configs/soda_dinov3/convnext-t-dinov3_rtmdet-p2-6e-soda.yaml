@@ -1,0 +1,14 @@
+# Phase 1 / CNN reference: frozen DINOv3 ConvNeXt-T, all four stages
+# (strides 4 / 8 / 16 / 32) into the neck.
+_base_: ./_base_/rtmdet-p2_dinov3_6e.yaml
+
+model:
+  backbone:
+    _delete_: true
+    type: TimmFeatureBackbone
+    model_name: convnext_tiny.dinov3_lvd1689m
+    checkpoint: /mnt/4TB/weights/timm/convnext_tiny.dinov3_lvd1689m
+    out_indices: [0, 1, 2, 3]
+    frozen: true
+  neck:
+    in_channels: [96, 192, 384, 768]

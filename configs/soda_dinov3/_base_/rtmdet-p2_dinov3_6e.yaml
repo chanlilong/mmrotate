@@ -1,0 +1,121 @@
+# Shared settings for every SODA-A DINOv3 experiment. Children only set the
+# backbone (always frozen) and the neck's input channels; everything else
+# (P2-P5 neck/head, assigner, schedule, bf16, data) is identical, so the
+# runs differ in the feature extractor alone.
+_base_:
+  - ../../rotated_rtmdet/_base_/default_runtime.py
+  - ./soda-a_800.py
+
+model:
+  type: mmdet.RTMDet
+  data_preprocessor:
+    type: mmdet.DetDataPreprocessor
+    # DINOv3 (ImageNet) normalisation, 0-255 RGB.
+    mean: [123.675, 116.28, 103.53]
+    std: [58.395, 57.12, 57.375]
+    bgr_to_rgb: true
+    pad_size_divisor: 32
+    boxtype2tensor: false
+    batch_augments: null
+  backbone:
+    type: TimmViTSimplePyramid  # placeholder, every child replaces it
+    checkpoint: /mnt/4TB/weights/timm/vit_small_patch16_dinov3.lvd1689m
+  neck:
+    type: mmdet.CSPNeXtPAFPN
+    in_channels: [256, 256, 256, 256]
+    out_channels: 128
+    num_csp_blocks: 1
+    expand_ratio: 0.5
+    norm_cfg: {type: BN}
+    act_cfg: {type: SiLU, inplace: true}
+  bbox_head:
+    type: RotatedRTMDetSepBNHead
+    num_classes: 9
+    in_channels: 128
+    stacked_convs: 2
+    feat_channels: 128
+    angle_version: le90
+    # P2-P5: stride 4 priors for the extremely small objects.
+    anchor_generator: {type: mmdet.MlvlPointGenerator, offset: 0, strides: [4, 8, 16, 32]}
+    bbox_coder: {type: DistanceAnglePointCoder, angle_version: le90}
+    loss_cls: {type: mmdet.QualityFocalLoss, use_sigmoid: true, beta: 2.0, loss_weight: 1.0}
+    loss_bbox: {type: RotatedIoULoss, mode: linear, loss_weight: 2.0}
+    with_objectness: false
+    exp_on_reg: false
+    share_conv: true
+    pred_kernel_size: 1
+    use_hbbox_loss: false
+    scale_angle: false
+    loss_angle: null
+    norm_cfg: {type: BN}
+    act_cfg: {type: SiLU, inplace: true}
+  train_cfg:
+    assigner:
+      type: mmdet.DynamicSoftLabelAssigner
+      iou_calculator: {type: RBboxOverlaps2D}
+      topk: 13
+    allowed_border: -1
+    pos_weight: -1
+    debug: false
+  test_cfg:
+    nms_pre: 2000
+    min_bbox_size: 0
+    score_thr: 0.05
+    nms: {type: nms_rotated, iou_threshold: 0.1}
+    max_per_img: 1000
+
+# 6 epochs over the ~20.7k non-empty train patches (batch 8, ~2.6k iters/epoch).
+max_epochs: &max_epochs 6
+train_cfg:
+  type: EpochBasedTrainLoop
+  max_epochs: *max_epochs
+  val_interval: 2
+val_cfg: {type: ValLoop}
+test_cfg: {type: TestLoop}
+
+param_scheduler:
+  - type: LinearLR
+    start_factor: 1.0e-3
+    by_epoch: false
+    begin: 0
+    end: 500
+  - type: CosineAnnealingLR
+    eta_min: 2.0e-5
+    begin: 1
+    end: *max_epochs
+    T_max: 5
+    by_epoch: true
+    convert_to_iter_based: true
+
+# bf16 mixed precision; only the adapter/neck/head are optimised.
+optim_wrapper:
+  type: AmpOptimWrapper
+  dtype: bfloat16
+  optimizer: {type: AdamW, lr: 4.0e-4, weight_decay: 0.05}
+  paramwise_cfg: {norm_decay_mult: 0, bias_decay_mult: 0, bypass_duplicate: true}
+  clip_grad: {max_norm: 35, norm_type: 2}
+
+default_hooks:
+  logger: {type: LoggerHook, interval: 50}
+  checkpoint: {type: CheckpointHook, interval: 2, max_keep_ckpts: 1, save_last: true}
+
+env_cfg:
+  cudnn_benchmark: true
+
+randomness:
+  seed: 0
+  deterministic: false
+
+auto_scale_lr:
+  enable: false
+  base_batch_size: 8
+
+# EMA as in the RTMDet runtime. mmdet's NumClassCheckHook is dropped: it
+# trips over the timm classifier attribute (``num_classes=0``) of the
+# headless backbones.
+custom_hooks:
+  - type: EMAHook
+    ema_type: mmdet.ExpMomentumEMA
+    momentum: 0.0002
+    update_buffers: true
+    priority: 49
