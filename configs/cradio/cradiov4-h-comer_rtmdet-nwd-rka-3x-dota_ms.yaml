@@ -1,0 +1,20 @@
+# NWD-RKA (Xu et al., ISPRS 2022) for cradiov4-h-comer_rtmdet-3x-dota_ms.yaml:
+# pure ranking assignment. Each GT takes its `topk` point priors ranked by NWD
+# (GT vs a `point_prior_scale * stride` box at the prior) as positives, so tiny
+# GTs always get positives; priors with best NWD < neg_thr are negatives, the
+# rest ignored. The QFL target / box-loss weight is NWD(prediction, GT).
+# `constant` is NWD's C, roughly the training set's mean sqrt(w * h):
+#   python tools/analysis_tools/nwd_constant.py <this config>
+# (12.8 is the paper's AI-TOD value). See configs/nwd_rka/ for other detectors.
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingAssigner
+      topk: 9
+      neg_thr: 0.3
+      point_prior_scale: 4.0
+      iou_calculator: &nwd {type: RBboxNWD2D, constant: 12.8}
+      quality_calculator: *nwd
