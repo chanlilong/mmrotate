@@ -109,7 +109,7 @@ class CRADIOv4CoMer(BaseModule):
         self.add_vit_feature = add_vit_feature
         self.out_indices = tuple(out_indices)
 
-        self.vit = RADIOVisionTransformer(**dict(vit_cfg or {}, with_cp=vit_with_cp))
+        self.vit = self._build_vit(vit_cfg, vit_with_cp)
         if self.vit.patch_size != 16:
             raise ValueError('ViT-CoMer assumes a patch size of 16')
         embed_dim = self.vit.embed_dim
@@ -162,6 +162,10 @@ class CRADIOv4CoMer(BaseModule):
 
         if freeze_vit:
             freeze_module(self.vit)
+
+    def _build_vit(self, vit_cfg: dict | None, with_cp: bool) -> nn.Module:
+        """Plain ViT with ``patch_embed``/``run_blocks``/``num_skip`` (subclass hook)."""
+        return RADIOVisionTransformer(**dict(vit_cfg or {}, with_cp=with_cp))
 
     @staticmethod
     def _init_weights(m: nn.Module) -> None:
