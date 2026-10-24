@@ -1,0 +1,20 @@
+# Lint config for the NWD-RKA package (kept local so the repository-wide
+# flake8/isort/yapf setup is untouched).
+target-version = "py310"
+line-length = 100
+
+[format]
+quote-style = "single"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "N", "ANN"]
+# Upper-case tensor dims (N, M, G) are idiomatic here and match upstream.
+ignore = ["N803", "N806", "N812"]
+
+[lint.isort]
+known-first-party = ["mmrotate"]
+
+[lint.per-file-ignores]
+# Triton JIT kernel arguments are left unannotated: Triton derives argument
+# specialisation from annotations, so only tl.constexpr ones carry a hint.
+"nwd_nms_triton.py" = ["ANN001"]

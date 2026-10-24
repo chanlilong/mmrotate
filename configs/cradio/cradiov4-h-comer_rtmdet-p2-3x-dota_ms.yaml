@@ -1,0 +1,12 @@
+# P2 variant of cradiov4-h-comer_rtmdet-3x-dota_ms.yaml: adds the stride 4
+# CoMer level to the neck and head for very small objects (e.g. vehicles).
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  backbone:
+    out_indices: [0, 1, 2, 3]  # strides 4 / 8 / 16 / 32
+  neck:
+    in_channels: [1280, 1280, 1280, 1280]
+  bbox_head:
+    anchor_generator:
+      strides: [4, 8, 16, 32]

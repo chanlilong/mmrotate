@@ -1,0 +1,16 @@
+# NWD-RKA on the P2 (stride 4) ViTDet variant: stride-4 priors plus ranking
+# assignment, the strongest small-object combination here. Assigner as in
+# cradiov4-h-comer_rtmdet-nwd-rka-3x-dota_ms.yaml; with stride 4 the smallest
+# prior boxes used for ranking are 16 px.
+_base_: ./cradiov4-h-vitdet_rtmdet-p2-3x-dota_ms.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingAssigner
+      topk: 9
+      neg_thr: 0.3
+      point_prior_scale: 4.0
+      iou_calculator: &nwd {type: RBboxNWD2D, constant: 12.8}
+      quality_calculator: *nwd

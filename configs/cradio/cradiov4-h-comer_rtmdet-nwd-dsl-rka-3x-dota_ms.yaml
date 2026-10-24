@@ -1,0 +1,18 @@
+# Hybrid NWD-RKA + dynamic soft-label assignment for
+# cradiov4-h-comer_rtmdet-3x-dota_ms.yaml. Stock DSL only considers priors whose
+# centre lies inside a GT; here each GT also adds its `rka_topk` priors ranked
+# by NWD as candidates, and the DSL cost / dynamic-k / soft labels use NWD
+# instead of rotated IoU. See cradiov4-h-comer_rtmdet-nwd-rka-3x-dota_ms.yaml
+# for the NWD constant.
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingDynamicSoftLabelAssigner
+      topk: 13
+      rka_topk: 3
+      rka_prior_scale: 4.0
+      rka_calculator: &nwd {type: RBboxNWD2D, constant: 12.8}
+      iou_calculator: *nwd
