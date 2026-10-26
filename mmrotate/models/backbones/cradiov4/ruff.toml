@@ -22,3 +22,4 @@ known-first-party = ["mmrotate"]
 # Our atomic-free backward kernels: Triton derives argument specialisation from
 # annotations, so only the tl.constexpr arguments carry a hint.
 "msda_triton_bwd.py" = ["ANN001"]
+"msda_triton_fused.py" = ["ANN001"]
