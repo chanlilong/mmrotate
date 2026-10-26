@@ -1,0 +1,16 @@
+# Phase 1 / ViTDet: frozen DINOv3 ViT-S/16, last block (stride 16) turned into
+# P2-P5 by the trainable ViTDet simple feature pyramid (deconvs / max pool).
+_base_: ./_base_/rtmdet-p2_dinov3_6e.yaml
+
+model:
+  backbone:
+    _delete_: true
+    type: TimmViTSimplePyramid
+    model_name: vit_small_patch16_dinov3
+    checkpoint: /mnt/4TB/weights/timm/vit_small_patch16_dinov3.lvd1689m
+    frozen: true
+    out_channels: 256
+    out_strides: [4, 8, 16, 32]
+    norm_cfg: {type: LN2d}
+  neck:
+    in_channels: [256, 256, 256, 256]

@@ -1,0 +1,17 @@
+# Phase 2 / NWD-DSL-RKA on the phase-1 ViT winner (ViT-CoMer). RTMDet's dynamic
+# soft-label assignment, but each GT also adds its `rka_topk` NWD-ranked priors
+# as candidates (so GTs smaller than a stride still get positives) and the DSL
+# cost / dynamic-k / soft labels use NWD instead of rotated IoU.
+# C = 16.6, see vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml.
+_base_: ./vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingDynamicSoftLabelAssigner
+      topk: 13
+      rka_topk: 3
+      rka_prior_scale: 4.0
+      rka_calculator: &nwd {type: RBboxNWD2D, constant: 16.6}
+      iou_calculator: *nwd

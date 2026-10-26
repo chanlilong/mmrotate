@@ -19,3 +19,6 @@ known-first-party = ["mmrotate"]
 # Vendored verbatim from rziga/msda-triton: Triton JIT kernels, whose argument
 # annotations carry semantics, so they are not re-annotated or reformatted.
 "msda_triton_kernels.py" = ["ANN", "E", "W", "I", "UP", "B", "N"]
+# Our atomic-free backward kernels: Triton derives argument specialisation from
+# annotations, so only the tl.constexpr arguments carry a hint.
+"msda_triton_bwd.py" = ["ANN001"]
