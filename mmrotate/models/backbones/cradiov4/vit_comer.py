@@ -21,6 +21,7 @@ from mmrotate.registry import MODELS
 
 from .comer_modules import CNN, CTIBlock, deform_inputs
 from .cradiov4 import freeze_module, load_radio_weights
+from .lora import inject_lora, set_lora_train
 from .ms_deform_attn import MSDeformAttn
 from .radio_vit import RADIOVisionTransformer
 
@@ -45,6 +46,9 @@ class CRADIOv4CoMer(BaseModule):
             flow through it to the CoMer modules.
         vit_cfg: Kwargs for :class:`RADIOVisionTransformer`.
         vit_with_cp: Gradient checkpointing for the ViT blocks.
+        lora_cfg: Kwargs for :func:`inject_lora` (e.g. ``dict(r=8)``); adds
+            trainable LoRA layers to the (frozen) ViT blocks so the ViT can
+            adapt to the CTI_toV injected features.
         interaction_indexes: Inclusive ``[start, end]`` ViT block ranges, one
             per interaction stage.
         conv_inplane: Width of the CNN branch (SPM).
@@ -75,6 +79,7 @@ class CRADIOv4CoMer(BaseModule):
         freeze_vit: bool = True,
         vit_cfg: dict | None = None,
         vit_with_cp: bool = False,
+        lora_cfg: dict | None = None,
         interaction_indexes: Sequence[Sequence[int]] = (
             (0, 7),
             (8, 15),
@@ -162,6 +167,8 @@ class CRADIOv4CoMer(BaseModule):
 
         if freeze_vit:
             freeze_module(self.vit)
+        if lora_cfg:
+            inject_lora(self.vit, **lora_cfg)
 
     def _build_vit(self, vit_cfg: dict | None, with_cp: bool) -> nn.Module:
         """Plain ViT with ``patch_embed``/``run_blocks``/``num_skip`` (subclass hook)."""
@@ -197,6 +204,7 @@ class CRADIOv4CoMer(BaseModule):
         super().train(mode)
         if self.freeze_vit:
             self.vit.eval()
+            set_lora_train(self.vit, mode)
         return self
 
     def _add_level_embed(self, c2: Tensor, c3: Tensor, c4: Tensor) -> tuple[Tensor, Tensor, Tensor]:

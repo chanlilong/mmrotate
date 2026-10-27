@@ -15,6 +15,8 @@ CONFIGS = {
     'cradio/cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
     'cradio/cradiov4-h_rtmdet-3x-dota_ms.yaml': ('CRADIOv4', [8, 16, 32]),
     'cradio/cradiov4-h-comer_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
+    'cradio/cradiov4-h-comer-lora_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
+    'cradio/cradiov4-h-comer-lora_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
 }
 TINY_DIM = 32
 TINY_VIT = dict(embed_dim=TINY_DIM, depth=4, num_heads=2, max_img_size=256)
@@ -68,7 +70,10 @@ def _build(cfg_file: str, device: str) -> torch.nn.Module:
     detector = MODELS.build(_tiny_detector_cfg(cfg_file))
     detector.init_weights()
     detector = detector.to(device)
-    assert all(not p.requires_grad for p in detector.backbone.vit.parameters())
+    vit_params = dict(detector.backbone.vit.named_parameters())
+    assert all(not p.requires_grad for n, p in vit_params.items() if '.lora_' not in n)
+    lora = [p for n, p in vit_params.items() if '.lora_' in n]
+    assert ('lora' in cfg_file) == bool(lora) and all(p.requires_grad for p in lora)
     return detector
 
 

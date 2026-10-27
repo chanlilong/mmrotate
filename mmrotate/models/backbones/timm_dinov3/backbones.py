@@ -18,6 +18,7 @@ from mmrotate.registry import MODELS
 
 from ...necks.vitdet_fpn import ViTDetSimpleFPN
 from ..cradiov4.cradiov4 import freeze_module
+from ..cradiov4.lora import inject_lora, set_lora_train
 from ..cradiov4.vit_comer import CRADIOv4CoMer
 from .timm_vit import TimmViT, create_timm_model
 
@@ -41,12 +42,15 @@ class TimmViTSimplePyramid(BaseModule):
     Args:
         model_name: timm ViT name.
         checkpoint: Local timm weights (HF snapshot dir or file).
-        frozen: Freeze the ViT; it then runs without autograd.
+        frozen: Freeze the ViT; it then runs without autograd unless LoRA
+            is enabled.
         out_index: Block whose output feeds the pyramid (``-1``: last).
         out_channels: Channels of every pyramid level.
         out_strides: Pyramid strides, e.g. ``(4, 8, 16, 32)`` for P2-P5.
         norm_cfg: Pyramid norm, ``LN2d`` as in ViTDet.
         vit_cfg: Extra kwargs for :class:`TimmViT`.
+        lora_cfg: Kwargs for :func:`inject_lora` (e.g. ``dict(r=8)``); adds
+            trainable LoRA layers to the (frozen) ViT blocks.
         init_cfg: Standard mmengine init config.
     """
 
@@ -60,10 +64,12 @@ class TimmViTSimplePyramid(BaseModule):
         out_strides: Sequence[int] = (4, 8, 16, 32),
         norm_cfg: dict | None = None,
         vit_cfg: dict | None = None,
+        lora_cfg: dict | None = None,
         init_cfg: dict | list[dict] | None = None,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
         self.frozen = frozen
+        self.lora = bool(lora_cfg)
         self.out_index = out_index
         self.out_strides = tuple(out_strides)
         self.vit = TimmViT(model_name, checkpoint, **(vit_cfg or {}))
@@ -76,16 +82,20 @@ class TimmViTSimplePyramid(BaseModule):
         )
         if frozen:
             freeze_module(self.vit)
+        if lora_cfg:
+            inject_lora(self.vit, **lora_cfg)
 
     def train(self, mode: bool = True) -> 'TimmViTSimplePyramid':
         super().train(mode)
         if self.frozen:
             self.vit.eval()
+            set_lora_train(self.vit, mode)
         return self
 
     def forward(self, x: Tensor) -> tuple[Tensor, ...]:
         x, in_h, in_w = _pad_to(x, max(self.vit.patch_size, *self.out_strides))
-        with torch.set_grad_enabled(torch.is_grad_enabled() and not self.frozen):
+        vit_grad = not self.frozen or self.lora
+        with torch.set_grad_enabled(torch.is_grad_enabled() and vit_grad):
             feat = self.vit.forward_features(x, [self.out_index])[0]
         outs = self.fpn([feat])
         return tuple(
@@ -109,7 +119,7 @@ class TimmViTCoMer(CRADIOv4CoMer):
         interaction_indexes: Inclusive ``[start, end]`` block ranges.
         deform_num_heads: Deformable attention heads.
         deform_ratio: Value projection ratio of the deformable attention.
-        **kwargs: Remaining :class:`CRADIOv4CoMer` arguments.
+        **kwargs: Remaining :class:`CRADIOv4CoMer` arguments (e.g. ``lora_cfg``).
     """
 
     def __init__(

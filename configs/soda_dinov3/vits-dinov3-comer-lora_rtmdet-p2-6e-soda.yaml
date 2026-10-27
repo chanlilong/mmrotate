@@ -1,0 +1,8 @@
+# ViT-CoMer + LoRA: the DINOv3 ViT-S/16 weights stay frozen, but LoRA (rank r,
+# zero-initialised, on every block linear) lets the ViT adapt to the CNN ->
+# ViT injected features. Everything else is identical to the CoMer run.
+_base_: ./vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    lora_cfg: {r: 8, alpha: 16, dropout: 0.0, target_modules: [qkv, proj, fc1, fc2]}

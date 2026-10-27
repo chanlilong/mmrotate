@@ -37,7 +37,9 @@ def _sample(h: int, w: int) -> DetDataSample:
 def test_configs_found() -> None:
     assert 'vits-dinov3-comer_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml' in CONFIGS
-    assert len(CONFIGS) == 6
+    assert 'vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
+    assert 'vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
+    assert len(CONFIGS) == 8
 
 
 @pytest.mark.parametrize('name', CONFIGS)
@@ -78,6 +80,8 @@ def test_config_forward_loss(name: str) -> None:
     total.backward()
     frozen = [p for p in model.backbone.parameters() if not p.requires_grad]
     assert frozen and all(p.grad is None for p in frozen)
+    lora = [p for n, p in model.backbone.named_parameters() if '.lora_' in n]
+    assert ('lora' in name) == bool(lora) and all(p.grad is not None for p in lora)
 
     model.eval()
     with torch.no_grad():

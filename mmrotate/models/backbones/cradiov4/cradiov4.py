@@ -10,13 +10,23 @@ from torch import Tensor
 from mmrotate.registry import MODELS
 
 from .checkpoint import load_radio_state_dict
+from .lora import inject_lora, set_lora_train
 from .radio_vit import RADIOVisionTransformer
 
 
 def load_radio_weights(vit: RADIOVisionTransformer, checkpoint: str) -> None:
-    """Load HF C-RADIO weights into ``vit`` with strict key matching."""
+    """Load HF C-RADIO weights into ``vit`` with strict key matching.
+
+    Only the ``lora_*`` parameters of an injected LoRA may be missing.
+    """
     state_dict = load_radio_state_dict(checkpoint)
-    vit.load_state_dict(state_dict, strict=True)
+    missing, unexpected = vit.load_state_dict(state_dict, strict=False)
+    missing = [k for k in missing if '.lora_' not in k]
+    if missing or unexpected:
+        raise RuntimeError(
+            f'Error loading C-RADIO weights from {checkpoint}: '
+            f'missing keys {missing}, unexpected keys {unexpected}'
+        )
     MMLogger.get_current_instance().info(f'Loaded C-RADIO weights from {checkpoint}')
 
 
@@ -53,6 +63,8 @@ class CRADIOv4(BaseModule):
         out_strides: Output stride of each returned level.
         frozen: Freeze all ViT weights and keep it in eval mode.
         vit_cfg: Extra kwargs for :class:`RADIOVisionTransformer`.
+        lora_cfg: Kwargs for :func:`inject_lora` (e.g. ``dict(r=8)``); adds
+            trainable LoRA layers to the (frozen) ViT blocks.
         init_cfg: Standard mmengine init config.
     """
 
@@ -63,6 +75,7 @@ class CRADIOv4(BaseModule):
         out_strides: Sequence[int] = (8, 16, 32),
         frozen: bool = True,
         vit_cfg: dict | None = None,
+        lora_cfg: dict | None = None,
         init_cfg: dict | list[dict] | None = None,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
@@ -75,6 +88,8 @@ class CRADIOv4(BaseModule):
         self.vit = RADIOVisionTransformer(**(vit_cfg or {}))
         if frozen:
             freeze_module(self.vit)
+        if lora_cfg:
+            inject_lora(self.vit, **lora_cfg)
 
     def init_weights(self) -> None:
         super().init_weights()
@@ -85,6 +100,7 @@ class CRADIOv4(BaseModule):
         super().train(mode)
         if self.frozen:
             self.vit.eval()
+            set_lora_train(self.vit, mode)
         return self
 
     def forward(self, x: Tensor) -> tuple[Tensor, ...]:

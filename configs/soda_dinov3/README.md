@@ -61,6 +61,8 @@ Everything except the feature extractor:
 | `vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml` | DINOv3 ViT-S/16 (21.6M) | ViTDet simple pyramid from the last block plus final norm: 2× deconv to stride 4, deconv to 8, identity at 16, max-pool to 32; 256 channels |
 | `vits-dinov3-comer_rtmdet-p2-6e-soda.yaml` | DINOv3 ViT-S/16 (21.6M) | ViT-CoMer-S adapter: CNN spatial-prior branch plus CTI blocks after blocks 2/5/8/11, with 4 extra CTI; 384-channel outputs at strides 4/8/16/32 |
 | `convnext-t-dinov3_rtmdet-p2-6e-soda.yaml` | DINOv3 ConvNeXt-T (27.8M) | none: all 4 stages (96/192/384/768 channels) go straight to the neck |
+| `vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml` | as CoMer, weights still frozen | as CoMer, plus LoRA (r = 8, α = 16) on every ViT block linear (`qkv`, `proj`, `fc1`, `fc2`, 0.59M params), so the ViT can adapt to the CNN → ViT injected features |
+| `vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml` | as ViTDet, weights still frozen | as ViTDet, plus the same LoRA: the control without injection (ViT blocks use gradient checkpointing) |
 | `vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingAssigner` (NWD top-9, NWD soft targets, C = 16.6) |
 | `vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingDynamicSoftLabelAssigner` (DSL using NWD plus 3 NWD-ranked extra candidates per GT, C = 16.6) |
 
@@ -71,6 +73,10 @@ The backbones are implemented in `mmrotate/models/backbones/timm_dinov3/`:
   folders.
 - `TimmViTCoMer` reuses the ViT-CoMer adapter of `CRADIOv4CoMer` unchanged. Only the plain ViT is swapped, for a timm
   DINOv3 Eva with RoPE.
+- LoRA (`lora_cfg` on every ViT backbone, see `cradiov4/lora.py`) wraps the block linears without touching the
+  pretrained weights: they keep their parameters and state-dict keys and stay frozen, and only `lora_A` / `lora_B` train.
+  `lora_B` starts at zero, so training starts from exactly the frozen model. Set the rank, scaling, dropout, target layers
+  and blocks in the config, e.g. `lora_cfg: {r: 16, alpha: 32, dropout: 0.05, target_modules: [qkv], block_indices: [8, 9, 10, 11]}`.
 
 ## Reproduce
 
