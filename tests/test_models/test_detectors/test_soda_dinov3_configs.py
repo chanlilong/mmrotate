@@ -40,7 +40,8 @@ def test_configs_found() -> None:
     assert 'vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml' in CONFIGS
-    assert len(CONFIGS) == 9
+    assert 'convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml' in CONFIGS
+    assert len(CONFIGS) == 10
 
 
 @pytest.mark.parametrize('name', CONFIGS)

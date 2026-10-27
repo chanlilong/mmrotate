@@ -5,7 +5,7 @@
 # a `collect` job that runs once all of them have ended. Finished runs are
 # skipped inside the jobs, so re-submitting after a failure is safe.
 #
-#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|phase2] ...
+#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|dcfl|phase2] ...
 #
 # Env (defaults for the voltronix cluster): PARTITION, NODELIST (nodes that
 # have IMAGE), IMAGE, WORK, DATA_ROOT, WEIGHTS, TIME (per-run limit),
@@ -42,7 +42,7 @@ submit() {
 one() { submit "soda-$(basename "$1" .yaml | sed 's/_rtmdet-p2//; s/-6e-soda//')${2:+-s$2}" one "$@"; }
 
 groups=("$@")
-[[ ${#groups[@]} == 0 || ${groups[0]} == all ]] && groups=(bench phase1 phase2 lora noinj seeds)
+[[ ${#groups[@]} == 0 || ${groups[0]} == all ]] && groups=(bench phase1 phase2 lora dcfl noinj seeds)
 for g in "${groups[@]}"; do
     case $g in
         bench) submit soda-bench bench ;;
@@ -56,6 +56,10 @@ for g in "${groups[@]}"; do
             one $CFG/vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
             ;;
         noinj) one $CFG/vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml ;;
+        dcfl)
+            one $CFG/vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml
+            one $CFG/convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml
+            ;;
         lora)
             one $CFG/vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml
             one $CFG/vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml

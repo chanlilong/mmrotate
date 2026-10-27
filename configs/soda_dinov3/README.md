@@ -66,6 +66,7 @@ Everything except the feature extractor:
 | `vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingAssigner` (NWD top-9 ranking, rotated-IoU soft targets, C = 16.6) |
 | `vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingDynamicSoftLabelAssigner` (rotated-IoU DSL plus 3 NWD-ranked extra candidates per GT, C = 16.6) |
 | `vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml` | as CoMer | as CoMer, with DCFL: `RotatedRTMDetSepBNDCFLHead` (dilated conv + DCNv2 tower, DCN-shifted priors) and `C2FAssigner` (GJSD top-16, quality top-12, DGMM constraint; see `configs/dcfl/`) |
+| `convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml` | as ConvNeXt-T | as ConvNeXt-T, with the same DCFL head and assigner as the CoMer DCFL run: DCFL on the CNN reference |
 
 C is the mean √(wh) of the SODA-A train boxes, from `tools/analysis_tools/nwd_constant.py`.
 

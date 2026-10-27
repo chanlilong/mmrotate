@@ -10,6 +10,7 @@
 #   tools/soda_dinov3/run_experiments.sh noinj    # CoMer without CNN->ViT injector
 #   tools/soda_dinov3/run_experiments.sh seeds    # seed-1 repeats (noise)
 #   tools/soda_dinov3/run_experiments.sh lora     # CoMer / ViTDet with ViT LoRA
+#   tools/soda_dinov3/run_experiments.sh dcfl     # CoMer / ConvNeXt-T with DCFL
 #   tools/soda_dinov3/run_experiments.sh phase2   # NWD-RKA / NWD-DSL-RKA
 #   tools/soda_dinov3/run_experiments.sh collect  # markdown results
 #   tools/soda_dinov3/run_experiments.sh one <config> [seed]  # a single run
@@ -34,6 +35,8 @@ COMER_NOINJ=$CFG/vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml
 CONVNEXT=$CFG/convnext-t-dinov3_rtmdet-p2-6e-soda.yaml
 COMER_LORA=$CFG/vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml
 VITDET_LORA=$CFG/vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml
+COMER_DCFL=$CFG/vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml
+CONVNEXT_DCFL=$CFG/convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml
 NWD_RKA=$CFG/vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml
 NWD_DSL_RKA=$CFG/vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
 
@@ -93,6 +96,10 @@ case ${1:-} in
         train_test "$COMER_LORA"
         train_test "$VITDET_LORA"
         ;;
+    dcfl)
+        train_test "$COMER_DCFL"
+        train_test "$CONVNEXT_DCFL"
+        ;;
     phase2)
         train_test "$NWD_RKA"
         train_test "$NWD_DSL_RKA"
@@ -104,7 +111,7 @@ case ${1:-} in
         in_docker python tools/soda_dinov3/collect_results.py "$WORK"
         ;;
     *)
-        sed -n '3,21p' "$0"
+        sed -n '3,22p' "$0"
         exit 1
         ;;
 esac

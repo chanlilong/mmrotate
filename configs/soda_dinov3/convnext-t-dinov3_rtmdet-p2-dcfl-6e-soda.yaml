@@ -1,0 +1,27 @@
+# DCFL (Xu et al., CVPR 2023) on the CNN reference (frozen DINOv3 ConvNeXt-T):
+# the same head / assigner swap as vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml,
+# so ConvNeXt-T vs ConvNeXt-T + DCFL isolates DCFL, and CoMer + DCFL vs
+# ConvNeXt-T + DCFL compares the backbones under DCFL.
+# - RotatedRTMDetSepBNDCFLHead: dilated conv + DCNv2 tower, DCN-shifted priors.
+# - C2FAssigner: coarse top-16 by GJSD (point priors as 4x-stride boxes), fine
+#   top-12 by IoU(pred, gt) + score, DGMM constraint (exp(-0.6)); the soft
+#   target / box-loss weight stays the rotated IoU of the prediction.
+_base_: ./convnext-t-dinov3_rtmdet-p2-6e-soda.yaml
+
+model:
+  bbox_head:
+    type: RotatedRTMDetSepBNDCFLHead
+    dilation_rate: 3
+    prior_offset_scale: 0.5
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: C2FAssigner
+      topk: 16
+      topq: 12
+      neg_thr: 0.8
+      constraint: dgmm
+      gauss_thr: 0.6
+      point_prior_scale: 4.0
+      iou_calculator: {type: RBboxGJSD2D}
+      quality_calculator: {type: RBboxOverlaps2D}
