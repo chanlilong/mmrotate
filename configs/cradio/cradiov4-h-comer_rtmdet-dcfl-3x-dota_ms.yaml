@@ -1,0 +1,23 @@
+# DCFL (Xu et al., CVPR 2023) for cradiov4-h-comer_rtmdet-3x-dota_ms.yaml: DCN
+# dynamic priors (RotatedRTMDetSepBNDCFLHead) + coarse-to-fine assignment
+# (C2FAssigner), the same head/assigner swap as
+# configs/dcfl/rotated_rtmdet_l-dcfl-3x-dota_ms.yaml.
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  bbox_head:
+    type: RotatedRTMDetSepBNDCFLHead
+    dilation_rate: 3
+    prior_offset_scale: 0.5
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: C2FAssigner
+      topk: 16
+      topq: 12
+      neg_thr: 0.8
+      constraint: dgmm
+      gauss_thr: 0.6
+      point_prior_scale: 4.0
+      iou_calculator: {type: RBboxGJSD2D}
+      quality_calculator: {type: RBboxOverlaps2D}

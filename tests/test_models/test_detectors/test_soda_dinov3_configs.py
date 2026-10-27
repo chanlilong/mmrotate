@@ -39,7 +39,8 @@ def test_configs_found() -> None:
     assert 'vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
-    assert len(CONFIGS) == 8
+    assert 'vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml' in CONFIGS
+    assert len(CONFIGS) == 9
 
 
 @pytest.mark.parametrize('name', CONFIGS)
@@ -50,6 +51,9 @@ def test_config_settings(name: str) -> None:
     for key in SHARED:
         a, b = dict(cfg.model[key]), dict(base.model[key])
         a.pop('in_channels', None), b.pop('in_channels', None)
+        if key == 'bbox_head' and 'dcfl' in name:  # DCFL head = SepBN head + DCN tower
+            assert a.pop('type') == 'RotatedRTMDetSepBNDCFLHead'
+            a.pop('dilation_rate'), a.pop('prior_offset_scale'), b.pop('type')
         assert a == b, key
     for key in ('optim_wrapper', 'param_scheduler', 'train_cfg', 'train_dataloader'):
         assert cfg[key] == base[key], key
@@ -57,7 +61,7 @@ def test_config_settings(name: str) -> None:
     assert cfg.model.bbox_head.anchor_generator.strides == [4, 8, 16, 32]
     backbone = cfg.model.backbone
     assert backbone.get('frozen', backbone.get('freeze_vit')) is True
-    if 'nwd' in name:
+    if 'nwd' in name or 'dcfl' in name:
         assert cfg.model.train_cfg.assigner.type != 'mmdet.DynamicSoftLabelAssigner'
 
 

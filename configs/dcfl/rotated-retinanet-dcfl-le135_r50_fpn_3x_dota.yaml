@@ -1,0 +1,49 @@
+# DCFL (Xu et al., CVPR 2023) on rotated RetinaNet-R50 for DOTA-v1.0: a port of
+# mmrotate-dcfl/configs/dcfl/dotav1_test_dcfl_r50_3x.py (paper setting).
+# - Head: one square anchor per location (4x stride). The last two tower convs
+#   are a dilated conv (dilation 4 on DOTA-v1.0, 3 on DOTA-v2.0) and a DCNv2 whose
+#   mean offset moves the anchors before assignment (dynamic priors).
+# - Assigner: coarse top-16 anchors per GT by GJSD, then fine top-12 by
+#   IoU(pred, gt) + score, filtered by the DGMM constraint (exp(-0.6)).
+# - Loss on decoded boxes (rotated IoU), 3x schedule (SGD 0.0025, batch 2).
+_base_: ../rotated_retinanet/rotated-retinanet-rbox-le135_r50_fpn_1x_dota.py
+
+model:
+  bbox_head:
+    type: RotatedDCFLHead
+    dilation_rate: 4
+    prior_offset_scale: 0.5
+    anchor_generator:
+      octave_base_scale: 4
+      scales_per_octave: 1
+      ratios: [1.0]
+    reg_decoded_bbox: true
+    loss_bbox: {_delete_: true, type: RotatedIoULoss, loss_weight: 1.0}
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: C2FAssigner
+      topk: 16
+      topq: 12
+      neg_thr: 0.8
+      constraint: dgmm
+      gauss_thr: 0.6
+      gpu_assign_thr: 1024
+      iou_calculator: {type: RBboxGJSD2D}
+
+train_cfg:
+  max_epochs: 36
+param_scheduler:
+  - type: LinearLR
+    start_factor: 0.3333333333333333
+    by_epoch: false
+    begin: 0
+    end: 500
+  - type: MultiStepLR
+    begin: 0
+    end: 36
+    by_epoch: true
+    milestones: [24, 33]
+    gamma: 0.1
+default_hooks:
+  checkpoint: {type: CheckpointHook, interval: 4}

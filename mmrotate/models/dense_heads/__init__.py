@@ -1,6 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from .angle_branch_retina_head import AngleBranchRetinaHead
 from .cfa_head import CFAHead
+from .dcfl import RotatedDCFLHead, RotatedRTMDetSepBNDCFLHead
 from .h2rbox_head import H2RBoxHead
 from .h2rbox_v2_head import H2RBoxV2Head
 from .oriented_reppoints_head import OrientedRepPointsHead
@@ -19,5 +20,6 @@ __all__ = [
     'SAMRepPointsHead', 'AngleBranchRetinaHead', 'RotatedATSSHead',
     'RotatedFCOSHead', 'OrientedRepPointsHead', 'R3Head', 'R3RefineHead',
     'S2AHead', 'S2ARefineHead', 'CFAHead', 'H2RBoxHead', 'H2RBoxV2Head',
-    'RotatedRTMDetHead', 'RotatedRTMDetSepBNHead'
+    'RotatedRTMDetHead', 'RotatedRTMDetSepBNHead', 'RotatedDCFLHead',
+    'RotatedRTMDetSepBNDCFLHead'
 ]

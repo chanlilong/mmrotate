@@ -1,0 +1,38 @@
+# CPU-friendly smoke test of DCFL on rotated RTMDet-tiny with synthetic data:
+#   python tools/data/dota/make_proxy_dota.py --out data/proxy_dota
+#   python tools/train.py configs/dcfl/rotated_rtmdet_tiny-dcfl-proxy.yaml
+_base_: ../rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py
+
+model:
+  backbone: {init_cfg: null, norm_cfg: {type: BN}}
+  neck: {norm_cfg: {type: BN}}
+  bbox_head:
+    type: RotatedRTMDetSepBNDCFLHead
+    norm_cfg: {type: BN}
+    dilation_rate: 3
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: C2FAssigner
+      topk: 16
+      topq: 12
+      point_prior_scale: 4.0
+      quality_calculator: {type: RBboxOverlaps2D}
+
+train_dataloader:
+  batch_size: 2
+  num_workers: 2
+  dataset: {data_root: data/proxy_dota/}
+val_dataloader:
+  num_workers: 2
+  dataset: {data_root: data/proxy_dota/}
+test_dataloader:
+  num_workers: 2
+  dataset: {data_root: data/proxy_dota/}
+
+train_cfg: {max_epochs: 2, val_interval: 2}
+param_scheduler:
+  - {type: LinearLR, start_factor: 1.0e-3, by_epoch: false, begin: 0, end: 20}
+default_hooks:
+  logger: {type: LoggerHook, interval: 5}
+  checkpoint: {type: CheckpointHook, interval: 2, max_keep_ckpts: 1}

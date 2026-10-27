@@ -65,6 +65,7 @@ Everything except the feature extractor:
 | `vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml` | as ViTDet, weights still frozen | as ViTDet, plus the same LoRA: the control without injection (ViT blocks use gradient checkpointing) |
 | `vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingAssigner` (NWD top-9 ranking, rotated-IoU soft targets, C = 16.6) |
 | `vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingDynamicSoftLabelAssigner` (rotated-IoU DSL plus 3 NWD-ranked extra candidates per GT, C = 16.6) |
+| `vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml` | as CoMer | as CoMer, with DCFL: `RotatedRTMDetSepBNDCFLHead` (dilated conv + DCNv2 tower, DCN-shifted priors) and `C2FAssigner` (GJSD top-16, quality top-12, DGMM constraint; see `configs/dcfl/`) |
 
 C is the mean √(wh) of the SODA-A train boxes, from `tools/analysis_tools/nwd_constant.py`.
 

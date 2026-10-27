@@ -1,0 +1,27 @@
+# DCFL (Xu et al., CVPR 2023) on rotated RTMDet-l, DOTA-v1.0 multi-scale:
+# rotated_rtmdet_l-3x-dota_ms.py with the DCFL head and assigner.
+# - Head: RotatedRTMDetSepBNDCFLHead appends a dilated conv and a DCNv2 (each
+#   with per-level BN + SiLU) to both towers; the cls DCN reuses the reg DCN's
+#   offsets/masks, and the mean offset moves every point prior before assignment.
+# - Assigner: C2FAssigner on the dynamic priors, seen as 4x-stride boxes. Coarse
+#   top-16 by GJSD, fine top-12 by IoU(pred, gt) + score, then the DGMM constraint.
+#   The QFL soft target / box-loss weight stays the rotated IoU of the prediction.
+_base_: ../rotated_rtmdet/rotated_rtmdet_l-3x-dota_ms.py
+
+model:
+  bbox_head:
+    type: RotatedRTMDetSepBNDCFLHead
+    dilation_rate: 3
+    prior_offset_scale: 0.5
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: C2FAssigner
+      topk: 16
+      topq: 12
+      neg_thr: 0.8
+      constraint: dgmm
+      gauss_thr: 0.6
+      point_prior_scale: 4.0
+      iou_calculator: {type: RBboxGJSD2D}
+      quality_calculator: {type: RBboxOverlaps2D}
