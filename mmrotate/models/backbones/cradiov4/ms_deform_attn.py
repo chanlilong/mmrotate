@@ -4,7 +4,9 @@
 The sampling kernel is the Triton implementation vendored from
 https://github.com/rziga/msda-triton (MIT), so no CUDA extension has to be
 compiled. The backward uses the atomic-free kernels of ``msda_triton_bwd.py``
-(3-4x faster at ViT-CoMer shapes, deterministic). A pure PyTorch
+(3-4x faster at ViT-CoMer shapes, deterministic). By default ``MSDeformAttn``
+runs the fused kernels of ``msda_triton_fused.py`` instead, which also take
+over the softmax and the sampling-location arithmetic. A pure PyTorch
 ``grid_sample`` path is used on CPU or on request.
 """
 
@@ -18,6 +20,7 @@ from torch.autograd.function import Function, FunctionCtx, once_differentiable
 
 try:
     from .msda_triton_bwd import msda_bwd_atomic_free
+    from .msda_triton_fused import FusedMSDAFunction
     from .msda_triton_kernels import (
         triton_multi_scale_deformable_attention_bwd,
         triton_multi_scale_deformable_attention_fwd,
@@ -107,6 +110,12 @@ class _TritonMSDAFunction(Function):
         return grad_value, None, grad_loc, grad_attn
 
 
+def _use_triton(backend: str, value: Tensor) -> bool:
+    if backend not in ('auto', 'triton', 'pytorch'):
+        raise ValueError(f'Unknown MSDA backend {backend!r}')
+    return backend == 'triton' or (backend == 'auto' and HAS_TRITON and value.is_cuda)
+
+
 def multi_scale_deformable_attn(
     value: Tensor,
     spatial_shapes: Tensor,
@@ -118,10 +127,7 @@ def multi_scale_deformable_attn(
 
     ``backend`` is one of ``'auto'``, ``'triton'`` or ``'pytorch'``.
     """
-    if backend not in ('auto', 'triton', 'pytorch'):
-        raise ValueError(f'Unknown MSDA backend {backend!r}')
-    use_triton = backend == 'triton' or (backend == 'auto' and HAS_TRITON and value.is_cuda)
-    if use_triton:
+    if _use_triton(backend, value):
         return _TritonMSDAFunction.apply(
             value, spatial_shapes, sampling_locations, attention_weights
         )
@@ -142,6 +148,9 @@ class MSDeformAttn(nn.Module):
         n_points: Sampling points per head and level.
         ratio: Value projection width as a fraction of ``d_model``.
         backend: ``'auto'`` | ``'triton'`` | ``'pytorch'``.
+        fused: With the Triton backend, compute the softmax and the sampling
+            locations inside the kernel (``msda_triton_fused.py``) instead of
+            in PyTorch. Same parameters and results, less memory traffic.
     """
 
     def __init__(
@@ -152,6 +161,7 @@ class MSDeformAttn(nn.Module):
         n_points: int = 4,
         ratio: float = 1.0,
         backend: str = 'auto',
+        fused: bool = True,
     ) -> None:
         super().__init__()
         value_dim = int(d_model * ratio)
@@ -165,6 +175,7 @@ class MSDeformAttn(nn.Module):
         self.n_points = n_points
         self.ratio = ratio
         self.backend = backend
+        self.fused = fused
         self.sampling_offsets = nn.Linear(d_model, n_heads * n_levels * n_points * 2)
         self.attention_weights = nn.Linear(d_model, n_heads * n_levels * n_points)
         self.value_proj = nn.Linear(d_model, value_dim)
@@ -220,11 +231,16 @@ class MSDeformAttn(nn.Module):
             value = value.masked_fill(input_padding_mask[..., None], 0.0)
         value = value.view(B, Lin, H, -1)
         offsets = self.sampling_offsets(query).view(B, Lq, H, L, P, 2)
-        attn = self.attention_weights(query).view(B, Lq, H, L * P).softmax(-1)
-        attn = attn.view(B, Lq, H, L, P)
+        logits = self.attention_weights(query).view(B, Lq, H, L * P)
 
         if reference_points.shape[-1] != 2:
             raise ValueError('Only 2-d reference points are supported')
+        if self.fused and _use_triton(self.backend, value):
+            out = FusedMSDAFunction.apply(
+                value, input_spatial_shapes, reference_points, offsets, logits
+            )
+            return self.output_proj(out.reshape(B, Lq, -1))
+        attn = logits.softmax(-1).view(B, Lq, H, L, P)
         normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
         sampling_locations = (
             reference_points[:, :, None, :, None, :]

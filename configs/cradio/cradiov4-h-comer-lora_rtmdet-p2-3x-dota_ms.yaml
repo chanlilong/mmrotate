@@ -1,0 +1,8 @@
+# LoRA variant of cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml: the C-RADIOv4-H
+# weights stay frozen, but LoRA (rank r, zero-initialised, on every block
+# linear) lets the ViT adapt to the CNN -> ViT injected features.
+_base_: ./cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml
+
+model:
+  backbone:
+    lora_cfg: {r: 8, alpha: 16, dropout: 0.0, target_modules: [qkv, proj, fc1, fc2]}

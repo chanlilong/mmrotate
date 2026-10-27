@@ -1,6 +1,10 @@
 # Phase 2 / NWD-RKA on the phase-1 ViT winner (ViT-CoMer). Ranking assignment:
-# every GT takes its top-k priors by NWD (point priors as 4x-stride boxes), and
-# NWD between the decoded box and its GT is the soft classification target.
+# every GT takes its top-k priors by NWD (point priors as 4x-stride boxes). The
+# soft classification target and box-loss weight stay the rotated IoU between
+# the decoded box and its GT, as in the baseline. NWD only sees w^2 and h^2, so
+# with an NWD quality the head (exp_on_reg off) learned confident boxes with
+# negative w/h, which the test-time min_bbox_size filter drops: mAP ~0 on
+# SODA-A. RBboxOverlaps2D clamps w/h, giving such boxes a target of ~0.
 # C = 16.6 is the mean sqrt(w*h) of the SODA-A train patches
 # (tools/analysis_tools/nwd_constant.py).
 _base_: ./vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
@@ -13,5 +17,5 @@ model:
       topk: 9
       neg_thr: 0.3
       point_prior_scale: 4.0
-      iou_calculator: &nwd {type: RBboxNWD2D, constant: 16.6}
-      quality_calculator: *nwd
+      iou_calculator: {type: RBboxNWD2D, constant: 16.6}
+      quality_calculator: {type: RBboxOverlaps2D}

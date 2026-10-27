@@ -1,0 +1,9 @@
+# ViTDet + LoRA: control for the CoMer + LoRA run (same frozen DINOv3 ViT-S/16
+# with the same LoRA, but no CNN -> ViT injection). The ViT now needs autograd,
+# so its blocks use gradient checkpointing.
+_base_: ./vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    vit_cfg: {with_cp: true}
+    lora_cfg: {r: 8, alpha: 16, dropout: 0.0, target_modules: [qkv, proj, fc1, fc2]}
