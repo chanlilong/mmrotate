@@ -63,8 +63,8 @@ Everything except the feature extractor:
 | `convnext-t-dinov3_rtmdet-p2-6e-soda.yaml` | DINOv3 ConvNeXt-T (27.8M) | none: all 4 stages (96/192/384/768 channels) go straight to the neck |
 | `vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml` | as CoMer, weights still frozen | as CoMer, plus LoRA (r = 8, α = 16) on every ViT block linear (`qkv`, `proj`, `fc1`, `fc2`, 0.59M params), so the ViT can adapt to the CNN → ViT injected features |
 | `vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml` | as ViTDet, weights still frozen | as ViTDet, plus the same LoRA: the control without injection (ViT blocks use gradient checkpointing) |
-| `vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingAssigner` (NWD top-9, NWD soft targets, C = 16.6) |
-| `vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingDynamicSoftLabelAssigner` (DSL using NWD plus 3 NWD-ranked extra candidates per GT, C = 16.6) |
+| `vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingAssigner` (NWD top-9 ranking, rotated-IoU soft targets, C = 16.6) |
+| `vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml` | as CoMer | as CoMer, with the `RankingDynamicSoftLabelAssigner` (rotated-IoU DSL plus 3 NWD-ranked extra candidates per GT, C = 16.6) |
 
 C is the mean √(wh) of the SODA-A train boxes, from `tools/analysis_tools/nwd_constant.py`.
 
