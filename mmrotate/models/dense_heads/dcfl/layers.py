@@ -4,9 +4,16 @@
 MMCV-DCFL (https://github.com/Chasel-Tsui/MMCV-DCFL) only adds Python
 wrappers to mmcv: ``ModulatedDeformConvG`` is ``ModulatedDeformConv2dPack``
 returning ``(out, offset, mask)``. The kernels are the stock
-``modulated_deform_conv2d`` of official mmcv, so no custom build is needed;
+``modulated_deform_conv2d`` of official mmcv, so no custom build is needed.
+
 ``torchvision.ops.deform_conv2d`` (same maths and offset layout) is the
-fallback when the mmcv op is unavailable or the input is on the CPU.
+default backend. With the mmcv op the DCFL RTMDet head did not train on
+SODA-A (mmcv 2.2.0, torch 2.14, RTX PRO 6000 Blackwell): the box loss
+stayed flat and val mAP was 0 after 2 epochs, with or without the prior
+shift, dilation or offset learning, while the same head with torchvision
+trained normally. Single forward/backward passes of the two backends agree
+to fp32 / bf16 precision, so the cause is not visible in the unit tests;
+``backend='mmcv'`` stays available.
 """
 
 import math
@@ -49,12 +56,12 @@ def modulated_deform_conv(
     (like a regular conv) or else ``x``'s dtype.
 
     Args:
-        backend (str): ``'mmcv'``, ``'torchvision'`` or ``'auto'`` (mmcv for
-            CUDA inputs when available, torchvision otherwise).
+        backend (str): ``'mmcv'``, ``'torchvision'`` or ``'auto'``
+            (torchvision, see the module docstring).
     """
     assert backend in BACKENDS, f'unknown DCN backend {backend}'
     if backend == 'auto':
-        backend = 'mmcv' if HAS_MMCV_DCN and x.is_cuda else 'torchvision'
+        backend = 'torchvision'
     device_type = x.device.type
     if torch.is_autocast_enabled(device_type):
         dtype = torch.get_autocast_dtype(device_type)
