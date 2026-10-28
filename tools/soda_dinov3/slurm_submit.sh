@@ -5,7 +5,10 @@
 # a `collect` job that runs once all of them have ended. Finished runs are
 # skipped inside the jobs, so re-submitting after a failure is safe.
 #
-#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|dcfl|phase2] ...
+#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|dcfl|phase2|dump] ...
+#
+# `dump` re-runs the test split of the finished seed-0 runs with prediction dumps
+# (short DUMP_TIME jobs) and then queues the false_alarms.py analysis.
 #
 # Env (defaults for the voltronix cluster): PARTITION, NODELIST (nodes that
 # have IMAGE), IMAGE, WORK, DATA_ROOT, WEIGHTS, TIME (per-run limit),
@@ -24,6 +27,7 @@ export DOCKER_ARGS=${DOCKER_ARGS:---entrypoint= -e PYTHONPATH=/mmrotate}
 PARTITION=${PARTITION:-sep}
 NODELIST=${NODELIST:-may}
 TIME=${TIME:-12:00:00}
+DUMP_TIME=${DUMP_TIME:-01:30:00}
 
 mkdir -p "$WORK/slurm"
 common=(--partition="$PARTITION" --export=ALL --output="$WORK/slurm/%x-%j.out")
@@ -40,6 +44,10 @@ submit() {
     jobs+=("$id")
 }
 one() { submit "soda-$(basename "$1" .yaml | sed 's/_rtmdet-p2//; s/-6e-soda//')${2:+-s$2}" one "$@"; }
+dump() {
+    TIME=$DUMP_TIME submit "soda-dump-$(basename "$1" .yaml | sed 's/_rtmdet-p2//; s/-6e-soda//')" dump "$@"
+}
+dumped=0
 
 groups=("$@")
 [[ ${#groups[@]} == 0 || ${groups[0]} == all ]] && groups=(bench phase1 phase2 lora dcfl noinj seeds)
@@ -68,11 +76,25 @@ for g in "${groups[@]}"; do
             one $CFG/vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml 1
             one $CFG/convnext-t-dinov3_rtmdet-p2-6e-soda.yaml 1
             ;;
+        dump)
+            for c in convnext-t-dinov3 vits-dinov3-vitdet vits-dinov3-vitdet-lora vits-dinov3-comer \
+                vits-dinov3-comer-noinj vits-dinov3-comer-lora; do
+                dump $CFG/${c}_rtmdet-p2-6e-soda.yaml
+            done
+            dump $CFG/vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml
+            dump $CFG/vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
+            dumped=1
+            ;;
         *) echo "unknown group $g"; exit 1 ;;
     esac
 done
 
 dep=$(IFS=:; echo "${jobs[*]}")
+if [[ $dumped == 1 ]]; then
+    id=$(sbatch --parsable "${common[@]}" --job-name=soda-falsealarms --time=02:00:00 \
+        --dependency="afterany:$dep" tools/soda_dinov3/slurm_run.sbatch falsealarms)
+    echo "$id  soda-falsealarms (after $dep)"
+fi
 [[ ${COLLECT:-1} == 0 ]] && exit 0
 id=$(sbatch --parsable "${common[@]}" --job-name=soda-collect --time=01:00:00 \
     --dependency="afterany:$dep" tools/soda_dinov3/slurm_run.sbatch collect)

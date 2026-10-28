@@ -3,7 +3,7 @@
 # One slurm job = one run_experiments.sh invocation, on the GPU slurm gives us.
 # Submitted by slurm_submit.sh (which sets the job options and the env below):
 #
-#   sbatch [...] slurm_run.sbatch one <config> [seed] | bench | collect
+#   sbatch [...] slurm_run.sbatch one|dump <config> [seed] | bench | collect | falsealarms
 #
 # Env: IMAGE, WORK (as run_experiments.sh), DATA_ROOT (split SODA-A root),
 # WEIGHTS (folder with the timm checkpoints), DOCKER_ARGS.
@@ -32,7 +32,7 @@ opts=(
     "test_dataloader.dataset.data_root=$DATA_ROOT"
 )
 case ${1:-} in
-    one)
+    one|dump)
         if grep -q convnext <<< "$2"; then ckpt=convnext_tiny.dinov3_lvd1689m
         else ckpt=vit_small_patch16_dinov3.lvd1689m; fi
         opts+=("model.backbone.checkpoint=$WEIGHTS/$ckpt")

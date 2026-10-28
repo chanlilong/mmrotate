@@ -14,6 +14,8 @@
 #   tools/soda_dinov3/run_experiments.sh phase2   # NWD-RKA / NWD-DSL-RKA
 #   tools/soda_dinov3/run_experiments.sh collect  # markdown results
 #   tools/soda_dinov3/run_experiments.sh one <config> [seed]  # a single run
+#   tools/soda_dinov3/run_experiments.sh dump <config> [seed] # test predictions -> <run>/preds_test.pkl
+#   tools/soda_dinov3/run_experiments.sh falsealarms  # false-positive analysis of the dumps
 #
 # Env: IMAGE (docker image), WORK (work dir root), GPU (device id or UUID),
 # CFG_OPTIONS (extra --cfg-options for train/test/bench, e.g. local data and
@@ -71,7 +73,24 @@ train_test() {
     done
     echo "[test] $name ($(date))"
     in_docker python tools/test.py "$cfg" "$wd/epoch_6.pth" --work-dir "$wd/test" \
-        ${CFG_OPTS[@]:+--cfg-options "${CFG_OPTS[@]}"}
+        --out "$wd/preds_test.pkl" ${CFG_OPTS[@]:+--cfg-options "${CFG_OPTS[@]}"}
+}
+
+# dump <config> [seed]: test-split predictions of a finished run (for false_alarms.py),
+# evaluated in <run>/dump so collect_results.py does not see a second test run.
+dump() {
+    local cfg=$1 seed=${2:-0}
+    local name
+    name=$(basename "$cfg" .yaml)
+    [[ $seed != 0 ]] && name=${name}_seed${seed}
+    local wd=$WORK/$name
+    if [[ -f $wd/preds_test.pkl ]]; then
+        echo "[skip] $name (predictions present)"
+        return
+    fi
+    echo "[dump] $name ($(date))"
+    in_docker python tools/test.py "$cfg" "$wd/epoch_6.pth" --work-dir "$wd/dump" \
+        --out "$wd/preds_test.pkl" ${CFG_OPTS[@]:+--cfg-options "${CFG_OPTS[@]}"}
 }
 
 case ${1:-} in
@@ -107,11 +126,17 @@ case ${1:-} in
     one)
         train_test "$2" "${3:-0}"
         ;;
+    dump)
+        dump "$2" "${3:-0}"
+        ;;
+    falsealarms)
+        in_docker python tools/soda_dinov3/false_alarms.py "$WORK"
+        ;;
     collect)
         in_docker python tools/soda_dinov3/collect_results.py "$WORK"
         ;;
     *)
-        sed -n '3,22p' "$0"
+        sed -n '3,23p' "$0"
         exit 1
         ;;
 esac
