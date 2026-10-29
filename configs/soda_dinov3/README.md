@@ -288,6 +288,10 @@ Each item says whether it follows from SODA-A measurements here (**measured**) o
 - Re-run the false-alarm report with dense-safe test settings
   (`run_experiments.sh dump` with `CFG_OPTIONS="model.test_cfg.nms_pre=30000 model.test_cfg.max_per_img=3000"`,
   after moving the existing `preds_test.pkl` aside). The current tables understate DCFL's and NWD-RKA's recall.
+- Assigner hyperparameters: `tools/assigner_tuning/README.md` explains each one, probes all four assigners on
+  these checkpoints and has the tools to tune them. The probe points at the DCFL *head* as the source of the
+  ConvNeXt-T gain, so the next run is the DCFL head with NWD-DSL-RKA
+  (`convnext-t-dinov3_rtmdet-p2-dcflhead-nwd-dsl-rka-6e-soda.yaml`).
 - Seed noise is ±0.1 mAP here, but every result is a single 6-epoch run on one dataset. Confirm the top two
   choices (DSL vs NWD-DSL-RKA, native vs upsampled) on the target data before committing.
 

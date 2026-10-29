@@ -1,0 +1,14 @@
+# convnext-t-dinov3_rtmdet-p2-6e-soda plus AssignmentLogHook, which logs the positives
+# DSL (DynamicSoftLabelAssigner) gives every training object in every epoch.
+# It tells objects that are never trained from objects that are starved only
+# sometimes. Summarise <work_dir>/assignment_log.npz with
+# tools/assigner_tuning/assignment_log_report.py (see tools/assigner_tuning/README.md).
+_base_: ../soda_dinov3/convnext-t-dinov3_rtmdet-p2-6e-soda.yaml
+
+custom_imports:
+  imports: [mmrotate.engine.hooks]
+  allow_failed_imports: false
+
+custom_hooks:
+  - {type: EMAHook, ema_type: mmdet.ExpMomentumEMA, momentum: 0.0002, update_buffers: true, priority: 49}
+  - {type: AssignmentLogHook}

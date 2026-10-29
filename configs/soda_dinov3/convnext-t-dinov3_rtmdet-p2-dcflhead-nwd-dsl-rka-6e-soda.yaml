@@ -1,0 +1,21 @@
+# DCFL head with the NWD-DSL-RKA assigner on the CNN reference: separates the two
+# halves of DCFL. ConvNeXt-T + DCFL is +2.1 mAP over ConvNeXt-T (dense-safe test
+# settings), but the assigner probe (tools/assigner_tuning/README.md) shows its C2F
+# assignment leaves ~26% of the GTs under 8 px without a positive, against ~3%
+# for NWD-DSL-RKA on the same DCFL-head predictions. So the gain is likely the head
+# (dilated conv + DCNv2 context, DCN-shifted priors); this run keeps the head and
+# swaps in the assigner that covers tiny objects.
+# Compare with convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml (same head, C2F) and
+# convnext-t-dinov3_rtmdet-p2-6e-soda.yaml (plain head, DSL).
+_base_: ./convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingDynamicSoftLabelAssigner
+      topk: 13
+      rka_topk: 3
+      rka_prior_scale: 4.0
+      rka_calculator: {type: RBboxNWD2D, constant: 16.6}
+      iou_calculator: {type: RBboxOverlaps2D}

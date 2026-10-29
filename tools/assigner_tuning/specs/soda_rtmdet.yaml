@@ -1,0 +1,64 @@
+# Assigner families of the SODA-A DINOv3 experiments (configs/soda_dinov3), each
+# at its config value plus a one-at-a-time sweep, for
+#   tools/assigner_tuning/assigner_probe.py <config> --spec <this file> --no-config-assigner
+# The bases are the assigners of the RTMDet-P2 configs (point priors, rotated
+# boxes); C = 16.6 px is the SODA-A mean sqrt(w*h). For another dataset, set the
+# NWD constant to its mean GT size (tools/analysis_tools/nwd_constant.py).
+dsl:  # RTMDet default (vits-dinov3-comer_rtmdet-p2-6e-soda.yaml)
+  base:
+    type: mmdet.DynamicSoftLabelAssigner
+    iou_calculator: {type: RBboxOverlaps2D}
+    topk: 13
+    soft_center_radius: 3.0
+    iou_weight: 3.0
+  sweep:
+    topk: [5, 9, 17, 25]
+    soft_center_radius: [1.0, 2.0, 5.0]
+    iou_weight: [1.0, 5.0]
+
+nwd-rka:  # vits-dinov3-comer_rtmdet-p2-nwd-rka-6e-soda.yaml
+  base:
+    type: RankingAssigner
+    topk: 9
+    neg_thr: 0.3
+    point_prior_scale: 4.0
+    iou_calculator: {type: RBboxNWD2D, constant: 16.6}
+    quality_calculator: {type: RBboxOverlaps2D}
+  sweep:
+    topk: [3, 6, 13]
+    iou_calculator.constant: [8.0, 32.0]
+    point_prior_scale: [2.0, 8.0]
+
+nwd-dsl-rka:  # vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
+  base:
+    type: RankingDynamicSoftLabelAssigner
+    topk: 13
+    rka_topk: 3
+    rka_prior_scale: 4.0
+    rka_calculator: {type: RBboxNWD2D, constant: 16.6}
+    iou_calculator: {type: RBboxOverlaps2D}
+  sweep:
+    rka_topk: [1, 6, 9]
+    rka_prior_scale: [2.0, 8.0]
+    topk: [9, 17]
+
+c2f:  # DCFL, vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml (needs a DCFL-head checkpoint
+      # for the DCN-shifted priors; on a plain head the priors are the static points)
+  base:
+    type: C2FAssigner
+    topk: 16
+    topq: 12
+    neg_thr: 0.8
+    constraint: dgmm
+    gauss_thr: 0.6
+    dgmm_weight: 0.7
+    point_prior_scale: 4.0
+    iou_calculator: {type: RBboxGJSD2D}
+    quality_calculator: {type: RBboxOverlaps2D}
+  sweep:
+    topk: [9, 24, 32]
+    topq: [6, 9, 16]
+    gauss_thr: [0.3, 1.0, 1.5, 3.0]
+    constraint: [none]
+    dgmm_weight: [0.3, 1.0]
+    point_prior_scale: [2.0, 8.0]
