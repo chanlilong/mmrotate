@@ -18,7 +18,11 @@ comparison is in `configs/soda_dinov3/README.md`.
 - **Which assigner:** use **NWD-DSL-RKA** (or plain DSL) by default. With CoMer, DSL, NWD-DSL-RKA and DCFL
   finish within 0.3 mAP of each other (38.5 / 38.5 / 38.2), and NWD-RKA is 2 points behind (36.5). The probe
   shows why:
-  - NWD-DSL-RKA leaves the fewest objects under 8 px untrained: 1–3%, against 4–7% for DSL and 25–33% for C2F.
+  - NWD-DSL-RKA leaves the fewest objects under 8 px untrained: 1–3%, against 4–7% for DSL and 25–33% for C2F
+    in the probes.
+  - Logged over whole ConvNeXt-T trainings, C2F leaves 13.1% of the objects under 8 px without a positive in all
+    6 epochs, so they are trained only as background. DSL leaves 0.5% (see
+    [Starved once or always?](#starved-once-or-always)).
   - Its positives fit as well as DSL's.
   - It is the least sensitive to its hyperparameters.
   - DCFL's +2.1 mAP on ConvNeXt-T most likely comes from its head, not its assigner (see
@@ -85,14 +89,13 @@ raise scores next to objects. The rule used here is therefore:
 
 Two more points:
 
-- **Starved at one checkpoint is not the same as never trained.** The probe sees one set of predictions.
-  - DSL's starvation is mostly geometric: no prior centre inside a box thinner than the stride. On SODA-A the
-    only training augmentation is flipping 800×800 patches, and 800 is a multiple of every stride, so the prior
-    grid lines up the same way after a flip. The same objects lose out in every epoch.
-  - C2F's starvation depends on the predictions (fine stage, DGMM around the positives' mean) and on the
-    DCN-shifted priors, which change during training, so its starved set can move between objects.
-  - `AssignmentLogHook` measures this over a training run; see
-    [Starved once or always?](#starved-once-or-always).
+- **Starved at one checkpoint is not the same as never trained.** The probe sees one set of predictions, and
+  prediction-aware assigners change their choice as the model changes. `AssignmentLogHook` measures starvation
+  over a whole training run. On SODA-A it makes the difference between the two assigners
+  ([Starved once or always?](#starved-once-or-always)):
+  - DSL's starved tiny objects change from epoch to epoch. 2.2% are starved in a given epoch, but only 0.5% in
+    every epoch.
+  - C2F starves mostly the same tiny objects every epoch: 18.5% in a given epoch, 13.1% in all of them.
 - **Some starvation cannot be fixed by an assigner.** One prior predicts one box, so two objects whose only
   reachable prior is the same cannot both be trained. Only a finer stride (P1) or a larger input scale fixes
   that. Exact duplicate annotations are the extreme case; the tools merge them.
@@ -118,7 +121,9 @@ Two more points:
 | `iou_calculator` | `RBboxOverlaps2D` | IoU used for the cost and the soft label. Keep the rotated IoU: an NWD soft label lets negative-size boxes through, see the NWD-RKA config. | — |
 
 **Failure mode:** a GT with no candidate (no prior centre inside any GT nearby) has no positive. No DSL
-hyperparameter fixes this. 6–7% of the GTs under 8 px are untrained with every DSL setting probed.
+hyperparameter fixes this. 6–7% of the GTs under 8 px are untrained with every DSL setting probed on the plain
+ConvNeXt-T checkpoint. Over a whole training run, the starved objects change between epochs: 2.2% per epoch,
+0.5% in every epoch.
 
 ### NWD-RKA: `RankingAssigner`
 
@@ -170,7 +175,9 @@ always has candidates. The cost, dynamic k and soft labels are DSL's.
 | head: `dilation_rate`, `prior_offset_scale` | 3, 0.5 | Context of the head; how far DCN offsets move the priors. | Not probed (model, not assigner). C2F starves 33% of the tiny GTs on the plain-head checkpoint (static priors) and 26% on the DCFL one (shifted priors, different predictions too). |
 
 **Failure mode:** objects under about 8 px. DGMM is built for DOTA-sized objects. On SODA-A it removes the
-positives of a quarter of the tiny GTs. The fixes, in order:
+positives of a quarter of the tiny GTs in the probe sample. Logged over a whole ConvNeXt-T training run, it
+leaves 18.5% of them starved in a given epoch and 13.1% (about 8,000 objects) without a positive in any of the 6
+epochs. Those are trained only as background. The fixes, in order:
 - raise `gauss_thr` to 1.0–1.5;
 - lower `dgmm_weight` to 0.3;
 - lower `topk` to 9;
@@ -317,6 +324,44 @@ values use the dense-safe test settings.
 The score orders the four runs the same way as mAP. Coverage alone does not: NWD-RKA trains every GT but on
 poorly fitting priors. Four runs are a small sample, so treat the probe as a screen and let the search decide.
 
+### Starved once or always?
+
+`AssignmentLogHook` logged every training object (606,938 after merging duplicates) in every epoch of two
+ConvNeXt-T runs: DSL and DCFL (configs in `configs/assigner_tuning/`, 53 and 76 minutes on one RTX PRO 6000).
+
+| assigner | size (px) | objects | starved per epoch % | never matched % | starved all of epochs 4–6 % | matched every epoch % | positives per visit | best IoU |
+|---|---|---|---|---|---|---|---|---|
+| DSL | < 8 | 60,943 | 2.2 | **0.5** | 0.8 | 93.6 | 1.8 | 0.568 |
+| DSL | 8–12 | 105,349 | 0.1 | 0.0 | 0.0 | 99.7 | 4.8 | 0.709 |
+| DSL | ≥ 12 | 440,646 | 0.0 | 0.0 | 0.0 | ≥ 99.8 | 8.7–9.1 | 0.77–0.80 |
+| DCFL | < 8 | 60,943 | 18.5 | **13.1** | 15.3 | 75.5 | 3.1 | 0.567 |
+| DCFL | 8–12 | 105,349 | 1.0 | 0.3 | 0.6 | 97.9 | 8.0 | 0.695 |
+| DCFL | ≥ 12 | 440,646 | 0.0 | 0.0 | 0.0 | 100.0 | 11.7–11.9 | 0.76–0.80 |
+
+Objects under 8 px that were not matched in any epoch so far (%):
+
+| assigner | epoch 1 | ≤ 2 | ≤ 3 | ≤ 4 | ≤ 5 | ≤ 6 |
+|---|---|---|---|---|---|---|
+| DSL | 4.1 | 1.2 | 0.8 | 0.6 | 0.6 | 0.5 |
+| DCFL | 19.9 | 16.2 | 14.6 | 13.8 | 13.4 | 13.1 |
+
+- **DSL starves tiny objects only now and then.** The share that were never matched falls from 4.1% to 0.5%.
+  This disproves the geometric explanation given before the measurement: DSL's candidates and costs depend on
+  the predictions, so a given object loses out in some epochs and not in others.
+- **C2F starves the same objects every epoch.** The curve flattens at 13%: about 8,000 objects under 8 px are
+  trained only as background for the whole run. The share grows with crowding: 11% never matched in patches
+  under 50 objects, 16% in patches of 200–500. DCFL gives the objects it does match more positives (3.1 vs 1.8
+  per visit) of the same quality.
+- **The probe measures this correctly.** Probed with these runs' final checkpoints on its 120 sampled patches, it
+  reports exactly what the training log shows for the same patches in epoch 6: DSL 1.6%, DCFL 24.2% of tiny GTs
+  starved. Its sample is harder than the whole training set (DCFL: 24.2% against 18.4%) because the stratified
+  sampler favours crowded patches. Compare probe numbers with each other, not with whole-set numbers.
+- **Test mAP of these repeats** (config test settings, `nms_pre` 2000): DSL 36.6, DCFL 36.9, against 36.1 and
+  37.2 for the original runs, so DCFL's lead at these settings shrinks from +1.1 to +0.3. Both repeats moved by
+  more than the ±0.1 spread of the two DSL seeds (DSL +0.5, DCFL −0.3), so run-to-run noise is larger than two
+  seeds suggested. The dense-safe re-test, where the original runs differ by 2.1, has not been run on the
+  repeats.
+
 ### Sensitivity
 
 All 42 candidates were probed on the ConvNeXt-T + DCFL checkpoint (DCN-shifted priors). The panels show score,
@@ -354,18 +399,22 @@ head.**
 |---|---|---|---|---|
 | CoMer test mAP (dense-safe) | 38.5 | 38.5 | 38.2 | 36.5 |
 | ConvNeXt-T test mAP | 36.4 | not run | 38.5 | not run |
-| GTs < 8 px untrained | 4–7% | 1–3% | 25–33% | 0% (but pos IoU 0.4–0.5) |
+| GTs < 8 px starved (probe) | 4–7% | 1–3% | 25–33% | 0% (but pos IoU 0.4–0.5) |
+| GTs < 8 px never matched in training (ConvNeXt-T) | 0.5% | not logged | 13.1% | not logged |
 | sensitivity to its hyperparameters | low | lowest | high (`topk`, `gauss_thr`) | medium (`topk`) |
 | knobs worth tuning | `soft_center_radius` ≥ 2 | `rka_topk` 3–6 | `gauss_thr`, `dgmm_weight`, `topk` | `topk`, `neg_thr` with C |
 | extra cost | none | one NWD matrix | DCN head (+compute), GJSD | none |
 
 - **DSL** is the robust default: prediction-aware, few knobs, flat response. Its one gap is GTs with no prior
-  centre inside them.
+  centre inside them. Over a training run they change from epoch to epoch, so only 0.5% of the tiny objects
+  are never matched.
 - **NWD-DSL-RKA** closes that gap: tiny-object starvation drops 6.5% → 2.1% at the same pos IoU and the same
   mAP. It matters most where objects are thinner than the P2 stride. Production vehicles of 9–13 m at 0.5–0.7 m
   GSD are 3.6–5 px wide, which makes this the recommended assigner there.
-- **DCFL**, on ConvNeXt-T, is +2.1 mAP, while its C2F assignment trains *fewer* tiny objects than DSL. The gain
-  therefore most likely comes from the head (dilated conv + DCNv2 context, shifted priors). On the DCFL
+- **DCFL**, on ConvNeXt-T, is +2.1 mAP, while its C2F assignment leaves 13% of the tiny objects untrained for
+  the whole run, against 0.5% for DSL. The gain therefore most likely comes from the head (dilated conv + DCNv2
+  context, shifted priors). A repeat run at the config test settings narrowed the lead from +1.1 to +0.3, so
+  confirm it on more seeds. On the DCFL
   checkpoint the probe ranks NWD-DSL-RKA well above C2F: score 0.613 vs 0.585, tiny GTs starved 2.7% vs 26%.
   The next run to make is the DCFL head with NWD-DSL-RKA:
   ```bash
