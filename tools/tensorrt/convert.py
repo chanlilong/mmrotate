@@ -78,7 +78,12 @@ def parse_args() -> argparse.Namespace:
         help='module name patterns (fnmatch) kept in high precision',
     )
     parser.add_argument('--opset', type=int, default=19)
-    parser.add_argument('--opt-level', type=int, default=3, help='TensorRT optimization level')
+    parser.add_argument(
+        '--opt-level',
+        type=int,
+        help='TensorRT optimization level (default: 1 for fp32, which reproduces torch where '
+        'level 3 tactics did not, 3 otherwise)',
+    )
     parser.add_argument('--workspace-gb', type=float, help='TensorRT workspace limit')
     parser.add_argument('--keep-onnx', action='store_true', help='keep the ONNX graph')
     parser.add_argument(
@@ -164,6 +169,8 @@ def _verify(out_dir: Path, batches: list, ref_raw: list, ref_dets: list, device:
 
 def main() -> None:
     args = parse_args()
+    if args.opt_level is None:
+        args.opt_level = 1 if args.precision == 'fp32' else 3
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s: %(message)s')
     warnings.filterwarnings('ignore', message='.*building extension.*')
     cfg = Config.fromfile(args.config)
@@ -265,6 +272,7 @@ def main() -> None:
             **_versions(),
             gpu=props.name,
             compute_capability=f'{props.major}.{props.minor}',
+            opt_level=args.opt_level,
             date=datetime.now(timezone.utc).isoformat(timespec='seconds'),
         ),
     )
