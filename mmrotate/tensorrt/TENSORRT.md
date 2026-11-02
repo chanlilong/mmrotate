@@ -82,7 +82,8 @@ both, and loading warns on a mismatch.
 | `--quant-exclude` | see below | fnmatch patterns of module names kept in fp16 |
 | `--verify N` | 8 | compare raw outputs and detections with the torch model on N `--verify-split` images; stored in `trt_meta.json` |
 | `--keep-onnx` | off | keep `end2end.onnx` (+ external weights) next to the engine |
-| `--opt-level`, `--workspace-gb` | 3, unlimited | TensorRT builder settings |
+| `--opt-level` | 1 for `fp32`, else 3 | TensorRT builder optimization level (see the fp32 note below) |
+| `--workspace-gb` | unlimited | TensorRT workspace limit |
 
 ## How it works
 
@@ -146,8 +147,8 @@ with batch 8, built and run on an RTX PRO 6000 Blackwell (TensorRT 11.4). INT8 /
 | ConvNeXt-T DINOv3 | 38.43 | 38.43 | 38.44 | 38.39 | 38.27 | 5.5 |
 | ConvNeXt-T DINOv3 + DCFL head | 40.51 | 40.51 | 40.51 | 40.24 | 40.64 | |
 | ViT-S DINOv3 ViTDet-LoRA | 34.70 | 34.70 | 34.69 | 34.61 | 34.62 | |
-| ViT-S DINOv3 CoMer | 39.02 | 38.28 * | 38.98 | 38.92 | 38.34 | 11.1 |
-| ViT-S DINOv3 CoMer-LoRA | 38.33 | 35.53 * | 38.33 | 38.37 | 38.21 | |
+| ViT-S DINOv3 CoMer | 39.02 | 39.01 * | 38.98 | 38.92 | 38.34 | 11.1 |
+| ViT-S DINOv3 CoMer-LoRA | 38.33 | 38.32 * | 38.33 | 38.37 | 38.21 | |
 
 `_forward` latency, batch 8 at 800x800 (`bench.py`, images / s):
 
@@ -176,9 +177,10 @@ Findings:
   weights-only INT8 the outputs stay close, with INT8 activations they do not, for every
   calibration method (`max`, `mse`, `entropy`, `percentile`) and with BatchNorm folded first. Use
   FP8, or check `trt_meta.json` / `test_trt.py` before deploying an INT8 engine of another model.
-- \* **fp32 CoMer engines at batch 8 are unreliable.** The first ViT block of the DINOv3 CoMer
-  models has q / k activations of ~2000 (softmax logits ~1e5), so the result depends on the fp32
-  summation order of the TensorRT tactics picked at build time (pure fp32 FFMA kernels, no TF32):
-  one build reproduced torch (39.01, max output error 4e-3), the build in the table did not (max
-  error 31). Batch 1 and 2 builds matched torch. `--verify` shows it (`max_abs_err`); fp16 / bf16
-  with the fp32 attention logits above are not affected and are what to deploy.
+- \* **fp32 engines are built at optimization level 1.** The first ViT block of the DINOv3 CoMer
+  models has q / k activations of ~2000 (softmax logits ~1e5), which makes the fp32 result
+  sensitive to the kernels TensorRT picks. At level 3, the batch-8 CoMer engines were wrong on
+  every build (max output error 31; 38.28 and 35.53 mAP), while levels 0 and 1 reproduce torch
+  (error 4e-3; the table above). Level 1 costs 5-10% fp32 throughput (ConvNeXt-T, CoMer), so
+  it is the default for `fp32` only; the fp32 latencies below are level-3 builds. `--verify`
+  reports `max_abs_err` for every build, so check it when changing `--opt-level`.
