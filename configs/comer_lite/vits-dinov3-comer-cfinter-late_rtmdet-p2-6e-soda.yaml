@@ -1,0 +1,8 @@
+# CoMer-lite A4: CNN-side multi-scale self deformable attention (CTI_toC cfinter)
+# only in stages 3 and 4 (and the extra CTIs). In stages 1-2 CTI_toC reduces to
+# adding the ViT tokens into the stride-16 CNN tokens.
+_base_: ../soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    cnn_feature_interaction: [false, false, true, true]

@@ -171,6 +171,9 @@ regressions.
 
 ## 5. What to try (most impact for least risk first)
 
+Trained results for items 2 and 6 (narrow outputs, `extra_num`, `deform_ratio`, and more) are in
+[`COMER_LITE.md`](../models/backbones/comer_lite/COMER_LITE.md). Narrowing P2/P3 cost 2.9 mAP.
+
 1. **Profile first** to confirm the budget above:
    - torch: `torch.profiler` with `record_function` ranges around `spm`, each `CTIBlock`
      part, `run_blocks`, neck and head, or `nsys profile --trace=cuda,nvtx python tools/tensorrt/bench.py ...`.

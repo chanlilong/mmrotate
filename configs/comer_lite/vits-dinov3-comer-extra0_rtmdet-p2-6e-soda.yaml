@@ -1,0 +1,7 @@
+# CoMer-lite A2: ViT-S CoMer without the 4 extra CTIs after the last stage
+# (~55 GFLOP, ~210 small kernels). Everything else as the CoMer baseline.
+_base_: ../soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    use_extra_CTI: false
