@@ -19,7 +19,7 @@ SHARED = ('neck', 'bbox_head', 'test_cfg', 'data_preprocessor')
 def _load(name: str) -> Config:
     cfg = Config.fromfile(CFG_DIR / name)
     cfg.model.backbone.checkpoint = None  # random init, no weights needed
-    if cfg.model.backbone.type == 'TimmViTCoMer':
+    if cfg.model.backbone.type in ('TimmViTCoMer', 'LingBotViTCoMer'):
         cfg.model.backbone.conv_inplane = 16
     return cfg
 
@@ -41,7 +41,10 @@ def test_configs_found() -> None:
     assert 'vits-dinov3-vitdet-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml' in CONFIGS
     assert 'convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml' in CONFIGS
-    assert len(CONFIGS) == 10
+    for arch in ('vits', 'vitl'):
+        assert f'{arch}-lingbot-comer_rtmdet-p2-6e-soda.yaml' in CONFIGS
+        assert f'{arch}-lingbot-comer-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
+    assert len(CONFIGS) == 15
 
 
 @pytest.mark.parametrize('name', CONFIGS)
