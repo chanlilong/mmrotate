@@ -1,0 +1,13 @@
+# accelerate launch --config_file tools/accelerate/launch_configs/single_gpu.yaml \
+#     tools/accelerate/train.py <config>
+# Topology only: precision / DeepSpeed come from the mmrotate config's `accelerator:` block
+# (plain `python tools/accelerate/train.py <config>` is equivalent).
+compute_environment: LOCAL_MACHINE
+distributed_type: 'NO'
+num_machines: 1
+num_processes: 1
+machine_rank: 0
+gpu_ids: '0'
+mixed_precision: 'no'
+dynamo_config: {dynamo_backend: 'NO'}
+use_cpu: false

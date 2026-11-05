@@ -1,0 +1,25 @@
+# MuonAdamW version of vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml (DDP;
+# Muon cannot run under ZeRO). LoRA r=16 so the LoRA factors are Muon-trained.
+_base_: ./vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml
+
+custom_imports:
+  imports: [mmrotate.engine.optimizers, mmrotate.accelerate]
+  allow_failed_imports: false
+
+model:
+  backbone:
+    lora_cfg: {r: 16, alpha: 32}
+
+optim_wrapper:
+  constructor: MuonAdamWOptimWrapperConstructor
+  optimizer:
+    type: MuonAdamW
+    betas: [0.9, 0.999]
+    muon_momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    adjust_lr_fn: match_rms_adamw
+  paramwise_cfg:
+    muon_include_keys: [lora_A, lora_B]
+    muon_exclude_keys: [rtm_cls, rtm_reg, rtm_ang]
+    muon_min_dim: 16

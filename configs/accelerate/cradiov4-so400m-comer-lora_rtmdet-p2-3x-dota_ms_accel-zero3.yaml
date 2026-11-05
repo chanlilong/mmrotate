@@ -1,0 +1,32 @@
+# DeepSpeed ZeRO-3 version of ..._accel-bf16.yaml: the parameters are sharded
+# too and gathered layer by layer during forward / backward.
+#
+# * EMAHook becomes ZeRO3EMAHook automatically (same arguments): the EMA keeps a
+#   full copy and evaluation runs on it.
+# * Checkpoints: epoch_N.pth holds the gathered full weights (stock tools/test.py
+#   loads it); the sharded state for --resume is in accelerate_state/epoch_N/.
+# * SyncBN (the CoMer adapter's, and the one RTMDet adds on 2+ GPUs) is reverted
+#   to per-GPU BN: its collectives can deadlock against ZeRO-3's gathers
+#   (accelerator.zero3_sync_bn, default revert).
+# * zero3_leaf_modules (not needed here): classes gathered as a whole, for code
+#   that reads a sub-module's weights without calling it. Do NOT list the whole
+#   backbone (CRADIOv4CoMer): with its 4 outputs and a no-grad image input,
+#   DeepSpeed re-partitions its norms before their gradients arrive.
+# * Speed: every sub-module is gathered on each forward and backward, so ZeRO-3
+#   is much slower than ZeRO-2 here (1 GPU proxy: ~4x per iteration). The ViT
+#   trunk is frozen, so ZeRO-3 saves little over ZeRO-2 for this detector; it
+#   pays off when the trainable model does not fit on one GPU.
+_base_: ./cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
+
+accelerator:
+  deepspeed:
+    zero_optimization:
+      stage: 3
+      overlap_comm: true
+      contiguous_gradients: true
+      reduce_bucket_size: 50000000
+      stage3_prefetch_bucket_size: 50000000
+      stage3_param_persistence_threshold: 100000
+      # offload_param: {device: cpu, pin_memory: true}
+      # offload_optimizer: {device: cpu, pin_memory: true}
+  # zero3_leaf_modules: [SomeModuleClass]

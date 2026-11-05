@@ -1,0 +1,16 @@
+# accelerate launch --config_file tools/accelerate/launch_configs/multi_gpu.yaml \
+#     tools/accelerate/train.py <config>
+# One machine, num_processes GPUs (override with --num_processes N). Topology only: DDP vs
+# DeepSpeed ZeRO and the precision are chosen by the mmrotate config's `accelerator:` block.
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+num_machines: 1
+num_processes: 2
+machine_rank: 0
+gpu_ids: all
+main_process_port: 29500
+mixed_precision: 'no'
+dynamo_config: {dynamo_backend: 'NO'}
+rdzv_backend: static
+same_network: true
+use_cpu: false

@@ -1,0 +1,8 @@
+# DeepSpeed ZeRO-3 version of vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml
+# (EMAHook -> ZeRO3EMAHook automatically; the SyncBN that RTMDet adds on 2+ GPUs
+# is reverted to per-GPU BN, see accelerator.zero3_sync_bn).
+_base_: ./vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml
+
+accelerator:
+  deepspeed:
+    zero_optimization: {stage: 3, overlap_comm: true, contiguous_gradients: true}
