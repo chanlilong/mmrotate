@@ -32,6 +32,20 @@ def _pick(value: BoolOrList, i: int) -> bool:
     return value if isinstance(value, bool) else bool(value[i])
 
 
+def split_stages(depth: int, num_stages: int = 4) -> list[tuple[int, int]]:
+    """Split ``depth`` blocks into contiguous inclusive ``(start, end)`` stages.
+
+    ViT-H (32): ``(0, 7) .. (24, 31)``; SO400M (27): ``(0, 6), (7, 13), (14, 20), (21, 26)``.
+    """
+    size, extra = divmod(depth, num_stages)
+    stages, start = [], 0
+    for i in range(num_stages):
+        end = start + size + (i < extra) - 1
+        stages.append((start, end))
+        start = end + 1
+    return stages
+
+
 @MODELS.register_module()
 class CRADIOv4CoMer(BaseModule):
     """C-RADIOv4 + ViT-CoMer multi-scale backbone.
@@ -40,6 +54,10 @@ class CRADIOv4CoMer(BaseModule):
     ``out_indices`` (``(1, 2, 3)`` -> strides 8/16/32).
 
     Args:
+        arch: RADIO trunk, ``'vit_h'`` (C-RADIOv4-H) or ``'vit_so400m'``
+            (C-RADIOv4-SO400M); see ``RADIO_ARCHS``. ``None`` keeps
+            ``vit_cfg['arch']`` (default ``'vit_h'``). Must match
+            ``checkpoint``.
         checkpoint: HF C-RADIO directory or weights file, loaded with strict
             key matching in ``init_weights``.
         freeze_vit: Freeze the RADIO ViT (kept in eval mode). Gradients still
@@ -50,7 +68,9 @@ class CRADIOv4CoMer(BaseModule):
             trainable LoRA layers to the (frozen) ViT blocks so the ViT can
             adapt to the CTI_toV injected features.
         interaction_indexes: Inclusive ``[start, end]`` ViT block ranges, one
-            per interaction stage.
+            per interaction stage; the last must end at the last ViT block.
+            ``None`` splits the ViT into 4 near-equal stages (ViT-H:
+            ``[0, 7] .. [24, 31]``, SO400M: ``[0, 6] .. [21, 26]``).
         conv_inplane: Width of the CNN branch (SPM).
         n_points: Deformable sampling points.
         deform_num_heads: Deformable attention heads.
@@ -75,17 +95,13 @@ class CRADIOv4CoMer(BaseModule):
 
     def __init__(
         self,
+        arch: str | None = None,
         checkpoint: str | None = None,
         freeze_vit: bool = True,
         vit_cfg: dict | None = None,
         vit_with_cp: bool = False,
         lora_cfg: dict | None = None,
-        interaction_indexes: Sequence[Sequence[int]] = (
-            (0, 7),
-            (8, 15),
-            (16, 23),
-            (24, 31),
-        ),
+        interaction_indexes: Sequence[Sequence[int]] | None = None,
         conv_inplane: int = 64,
         n_points: int = 4,
         deform_num_heads: int = 16,
@@ -110,13 +126,23 @@ class CRADIOv4CoMer(BaseModule):
         norm_cfg = norm_cfg or dict(type='SyncBN', requires_grad=True)
         self.checkpoint = checkpoint
         self.freeze_vit = freeze_vit
-        self.interaction_indexes = [tuple(idx) for idx in interaction_indexes]
         self.add_vit_feature = add_vit_feature
         self.out_indices = tuple(out_indices)
 
+        if arch is not None:
+            vit_cfg = dict(vit_cfg or {}, arch=arch)
         self.vit = self._build_vit(vit_cfg, vit_with_cp)
         if self.vit.patch_size != 16:
             raise ValueError('ViT-CoMer assumes a patch size of 16')
+        depth = len(self.vit.blocks)
+        if interaction_indexes is None:
+            interaction_indexes = split_stages(depth)
+        self.interaction_indexes = [tuple(idx) for idx in interaction_indexes]
+        if self.interaction_indexes[-1][1] != depth - 1:
+            raise ValueError(
+                f'interaction_indexes end at block {self.interaction_indexes[-1][1]}, '
+                f'but the ViT has {depth} blocks'
+            )
         embed_dim = self.vit.embed_dim
         self.embed_dim = embed_dim
 

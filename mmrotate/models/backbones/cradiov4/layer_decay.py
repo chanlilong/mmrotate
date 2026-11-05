@@ -40,7 +40,7 @@ class CRADIOv4LayerDecayOptimWrapperConstructor(DefaultOptimWrapperConstructor):
     decay. Frozen parameters are skipped.
 
     ``paramwise_cfg`` keys:
-        num_layers: Depth of the ViT (32 for C-RADIOv4-H).
+        num_layers: Depth of the ViT (32 for C-RADIOv4-H, 27 for SO400M).
         layer_decay_rate: Per-layer lr decay (ViTDet: 0.7 B, 0.8 L, 0.9 H).
         backbone_prefix: Name prefix of the RADIO ViT parameters.
     """

@@ -6,6 +6,7 @@ model:
   backbone:
     _delete_: true
     type: CRADIOv4
+    arch: vit_h
     checkpoint: /mnt/zfs/models/nvidia/C-RADIOv4-H
     frozen: true
     out_indices: [15, 23, 31]

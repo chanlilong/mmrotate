@@ -17,6 +17,18 @@ CONFIGS = {
     'cradio/cradiov4-h-comer_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
     'cradio/cradiov4-h-comer-lora_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
     'cradio/cradiov4-h-comer-lora_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
+    'cradio/cradiov4-so400m-comer_rtmdet-3x-dota_ms.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
+    'cradio/cradiov4-so400m-comer_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
+    'cradio/cradiov4-so400m-comer_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
+    'cradio/cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms.yaml': (
+        'CRADIOv4CoMer',
+        [4, 8, 16, 32],
+    ),
+    'cradio/cradiov4-so400m-comer-lora_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
+}
+CHECKPOINTS = {
+    'vit_h': '/mnt/zfs/models/nvidia/C-RADIOv4-H',
+    'vit_so400m': '/mnt/zfs/models/nvidia/C-RADIOv4-SO400M',
 }
 TINY_DIM = 32
 TINY_VIT = dict(embed_dim=TINY_DIM, depth=4, num_heads=2, max_img_size=256)
@@ -49,7 +61,7 @@ def test_config_contents(cfg_file: str) -> None:
     assert cfg.default_scope == 'mmrotate'
     assert cfg.model.type == 'mmdet.RTMDet'
     assert cfg.model.backbone.type == backbone_type
-    assert cfg.model.backbone.checkpoint == '/mnt/zfs/models/nvidia/C-RADIOv4-H'
+    assert cfg.model.backbone.checkpoint == CHECKPOINTS[cfg.model.backbone.arch]
     assert cfg.model.neck.type == 'mmdet.CSPNeXtPAFPN'
     assert cfg.model.bbox_head.type == 'RotatedRTMDetSepBNHead'
     assert cfg.model.bbox_head.anchor_generator.strides == strides

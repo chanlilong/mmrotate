@@ -20,6 +20,7 @@ model:
     batch_augments: null
   backbone:
     type: CRADIOv4CoMer
+    arch: vit_h  # vit_h (C-RADIOv4-H) | vit_so400m (C-RADIOv4-SO400M), must match checkpoint
     checkpoint: /mnt/zfs/models/nvidia/C-RADIOv4-H
     freeze_vit: true
     vit_with_cp: true

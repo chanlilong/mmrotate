@@ -20,6 +20,7 @@ def load_radio_weights(vit: RADIOVisionTransformer, checkpoint: str) -> None:
     Only the ``lora_*`` parameters of an injected LoRA may be missing.
     """
     state_dict = load_radio_state_dict(checkpoint)
+    check_radio_arch(vit, state_dict, checkpoint)
     missing, unexpected = vit.load_state_dict(state_dict, strict=False)
     missing = [k for k in missing if '.lora_' not in k]
     if missing or unexpected:
@@ -28,6 +29,32 @@ def load_radio_weights(vit: RADIOVisionTransformer, checkpoint: str) -> None:
             f'missing keys {missing}, unexpected keys {unexpected}'
         )
     MMLogger.get_current_instance().info(f'Loaded C-RADIO weights from {checkpoint}')
+
+
+def check_radio_arch(
+    vit: RADIOVisionTransformer, state_dict: dict[str, Tensor], checkpoint: str
+) -> None:
+    """Fail early, with a readable message, if ``arch`` doesn't match the weights."""
+    pos_embed = state_dict.get('model.patch_generator.pos_embed')
+    if pos_embed is None:
+        return
+    depth = len({k.split('.')[2] for k in state_dict if k.startswith('model.blocks.')})
+    if (pos_embed.shape[-1], depth) != (vit.embed_dim, vit.depth):
+        raise ValueError(
+            f'{checkpoint} holds a ViT with embed_dim={pos_embed.shape[-1]}, depth={depth}, '
+            f'but the model was built with embed_dim={vit.embed_dim}, depth={vit.depth} '
+            f'(arch={vit.arch!r}). Set the backbone `arch` to match the checkpoint.'
+        )
+
+
+def default_out_indices(depth: int, num_outs: int) -> tuple[int, ...]:
+    """Last block of the final ``num_outs`` quarters of the ViT.
+
+    ViT-H (32 blocks): ``(15, 23, 31)``; SO400M (27 blocks): ``(12, 19, 26)``.
+    """
+    if not 1 <= num_outs <= 4:
+        raise ValueError(f'Give out_indices explicitly for {num_outs} output levels')
+    return tuple(depth * q // 4 - 1 for q in range(5 - num_outs, 5))
 
 
 def freeze_module(module: BaseModule | RADIOVisionTransformer) -> None:
@@ -57,9 +84,15 @@ class CRADIOv4(BaseModule):
     pyramid), so the backbone stays weight-identical to the HF release.
 
     Args:
+        arch: RADIO trunk, ``'vit_h'`` (C-RADIOv4-H) or ``'vit_so400m'``
+            (C-RADIOv4-SO400M); see ``RADIO_ARCHS``. ``None`` keeps
+            ``vit_cfg['arch']`` (default ``'vit_h'``). Must match
+            ``checkpoint``.
         checkpoint: HF model directory (e.g. ``/models/nvidia/C-RADIOv4-H``)
             or a ``.safetensors`` / ``.pth`` file. Loaded in ``init_weights``.
-        out_indices: Block indices whose outputs are returned.
+        out_indices: Block indices whose outputs are returned. ``None`` picks
+            the ends of the last ``len(out_strides)`` quarters of the ViT
+            (ViT-H: ``(15, 23, 31)``, SO400M: ``(12, 19, 26)``).
         out_strides: Output stride of each returned level.
         frozen: Freeze all ViT weights and keep it in eval mode.
         vit_cfg: Extra kwargs for :class:`RADIOVisionTransformer`.
@@ -70,8 +103,9 @@ class CRADIOv4(BaseModule):
 
     def __init__(
         self,
+        arch: str | None = None,
         checkpoint: str | None = None,
-        out_indices: Sequence[int] = (15, 23, 31),
+        out_indices: Sequence[int] | None = None,
         out_strides: Sequence[int] = (8, 16, 32),
         frozen: bool = True,
         vit_cfg: dict | None = None,
@@ -79,13 +113,18 @@ class CRADIOv4(BaseModule):
         init_cfg: dict | list[dict] | None = None,
     ) -> None:
         super().__init__(init_cfg=init_cfg)
+        vit_cfg = dict(vit_cfg or {})
+        if arch is not None:
+            vit_cfg['arch'] = arch
+        self.vit = RADIOVisionTransformer(**vit_cfg)
+        if out_indices is None:
+            out_indices = default_out_indices(self.vit.depth, len(out_strides))
         if len(out_indices) != len(out_strides):
             raise ValueError('out_indices and out_strides must have the same length')
         self.checkpoint = checkpoint
         self.out_indices = tuple(out_indices)
         self.out_strides = tuple(out_strides)
         self.frozen = frozen
-        self.vit = RADIOVisionTransformer(**(vit_cfg or {}))
         if frozen:
             freeze_module(self.vit)
         if lora_cfg:
