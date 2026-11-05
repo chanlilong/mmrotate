@@ -1,0 +1,9 @@
+# LoRA variant of cradiov4-so400m-comer_rtmdet-p2-3x-dota_ms.yaml: the
+# C-RADIOv4-SO400M weights stay frozen, but LoRA (rank r, zero-initialised, on
+# every block linear) lets the ViT adapt to the CNN -> ViT injected features.
+# SO400M counterpart of cradiov4-h-comer-lora_rtmdet-p2-3x-dota_ms.yaml.
+_base_: ./cradiov4-so400m-comer_rtmdet-p2-3x-dota_ms.yaml
+
+model:
+  backbone:
+    lora_cfg: {r: 8, alpha: 16, dropout: 0.0, target_modules: [qkv, proj, fc1, fc2]}

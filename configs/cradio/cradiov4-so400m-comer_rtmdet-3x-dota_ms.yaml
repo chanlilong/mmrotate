@@ -1,0 +1,24 @@
+# Rotated RTMDet on a frozen NVIDIA C-RADIOv4-SO400M ViT wrapped by the
+# ViT-CoMer adapter. Same detector, data, schedule and bf16 AMP as
+# cradiov4-h-comer_rtmdet-3x-dota_ms.yaml; only the ViT trunk changes:
+#
+#                 arch        embed_dim  depth  heads  MLP   params
+#   C-RADIOv4-H   vit_h       1280       32     16     5120  ~650M
+#   SO400M        vit_so400m  1152       27     16     4304  ~430M
+#
+# `arch` selects the trunk and must match `checkpoint` (a mismatch raises a
+# clear error when the weights are loaded). The adapter and the neck follow the
+# embed_dim (1152), and the 4 CoMer stages split the 27 blocks as 7/7/7/6.
+_base_: ./cradiov4-h-comer_rtmdet-3x-dota_ms.yaml
+
+model:
+  backbone:
+    type: CRADIOv4CoMer
+    arch: vit_so400m
+    checkpoint: /mnt/zfs/models/nvidia/C-RADIOv4-SO400M
+    # Must end at the last block (26). Leave out (null) to get this split
+    # automatically from the ViT depth.
+    interaction_indexes: [[0, 6], [7, 13], [14, 20], [21, 26]]
+    deform_num_heads: 16  # 1152 * deform_ratio 0.5 / 16 = 36 channels per head
+  neck:
+    in_channels: [1152, 1152, 1152]

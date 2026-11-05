@@ -33,9 +33,11 @@ opts=(
 )
 case ${1:-} in
     one|dump)
-        if grep -q convnext <<< "$2"; then ckpt=convnext_tiny.dinov3_lvd1689m
+        # LingBot-Vision configs already point at the local HF snapshot dir.
+        if grep -q lingbot <<< "$2"; then ckpt=
+        elif grep -q convnext <<< "$2"; then ckpt=convnext_tiny.dinov3_lvd1689m
         else ckpt=vit_small_patch16_dinov3.lvd1689m; fi
-        opts+=("model.backbone.checkpoint=$WEIGHTS/$ckpt")
+        [[ -n $ckpt ]] && opts+=("model.backbone.checkpoint=$WEIGHTS/$ckpt")
         ;;
     bench)
         # Speed / memory only, and the configs mix backbones: random init.

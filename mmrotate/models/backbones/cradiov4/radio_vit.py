@@ -18,6 +18,15 @@ from torch import Tensor, nn
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
+# Released C-RADIOv4 trunks (``args.model`` in the HF ``config.json``):
+# ``vit_huge_patch16_224`` and ``vit_so400m_patch16_224`` (RADIO's
+# ``extra_timm_models.py``). Everything else (patch 16, 3 cls + 7 register
+# tokens, 2048 CPE grid, exact GELU, LayerNorm eps 1e-6) is shared.
+RADIO_ARCHS: dict[str, dict] = {
+    'vit_h': dict(embed_dim=1280, depth=32, num_heads=16, mlp_ratio=4.0),
+    'vit_so400m': dict(embed_dim=1152, depth=27, num_heads=16, mlp_ratio=4304 / 1152),
+}
+
 
 class InputConditioner(nn.Module):
     """Normalises ``[0, 1]`` RGB images with the stored mean / std."""
@@ -184,13 +193,16 @@ class _ViTTrunk(nn.Module):
 
 
 class RADIOVisionTransformer(nn.Module):
-    """C-RADIO vision transformer (defaults: C-RADIOv4-H).
+    """C-RADIO vision transformer (default: C-RADIOv4-H).
 
     Args:
-        embed_dim: Token dimension.
-        depth: Number of transformer blocks.
-        num_heads: Attention heads per block.
-        mlp_ratio: Hidden / embed ratio of the MLP.
+        arch: One of :data:`RADIO_ARCHS` (``vit_h`` for C-RADIOv4-H,
+            ``vit_so400m`` for C-RADIOv4-SO400M); sets the four size
+            arguments below unless they are given explicitly.
+        embed_dim: Token dimension (overrides the preset).
+        depth: Number of transformer blocks (overrides the preset).
+        num_heads: Attention heads per block (overrides the preset).
+        mlp_ratio: Hidden / embed ratio of the MLP (overrides the preset).
         patch_size: Patch size in pixels.
         max_img_size: Resolution the CPE position grid was trained for.
         num_cls_tokens: Number of summary tokens.
@@ -203,10 +215,11 @@ class RADIOVisionTransformer(nn.Module):
 
     def __init__(
         self,
-        embed_dim: int = 1280,
-        depth: int = 32,
-        num_heads: int = 16,
-        mlp_ratio: float = 4.0,
+        arch: str = 'vit_h',
+        embed_dim: int | None = None,
+        depth: int | None = None,
+        num_heads: int | None = None,
+        mlp_ratio: float | None = None,
         patch_size: int = 16,
         max_img_size: int = 2048,
         num_cls_tokens: int = 3,
@@ -216,6 +229,14 @@ class RADIOVisionTransformer(nn.Module):
         with_cp: bool = False,
     ) -> None:
         super().__init__()
+        if arch not in RADIO_ARCHS:
+            raise ValueError(f'Unknown arch {arch!r}, expected one of {sorted(RADIO_ARCHS)}')
+        spec = RADIO_ARCHS[arch]
+        embed_dim = spec['embed_dim'] if embed_dim is None else embed_dim
+        depth = spec['depth'] if depth is None else depth
+        num_heads = spec['num_heads'] if num_heads is None else num_heads
+        mlp_ratio = spec['mlp_ratio'] if mlp_ratio is None else mlp_ratio
+        self.arch = arch
         self.embed_dim = embed_dim
         self.depth = depth
         self.patch_size = patch_size

@@ -370,6 +370,28 @@ The backbones are implemented in `mmrotate/models/backbones/timm_dinov3/`:
   `lora_B` starts at zero, so training starts from exactly the frozen model. Set the rank, scaling, dropout, target layers
   and blocks in the config, e.g. `lora_cfg: {r: 16, alpha: 32, dropout: 0.05, target_modules: [qkv], block_indices: [8, 9, 10, 11]}`.
 
+### LingBot-Vision variants
+
+The same CoMer adapter on frozen [LingBot-Vision](https://github.com/robbyant/lingbot-vision) ViTs. LingBot-Vision
+models are self-supervised (masked boundary modelling) ViTs, distilled from a ViT-g teacher. They use the DINOv3
+layout: cls plus 4 storage tokens, LayerScale, and axial RoPE. No results yet.
+
+| config | backbone (frozen) | trainable feature module |
+|---|---|---|
+| `vits-lingbot-comer_rtmdet-p2-6e-soda.yaml` | LingBot-Vision ViT-S/16 (21.6M) | ViT-CoMer-S adapter as in the DINOv3 CoMer run (8.3M) |
+| `vits-lingbot-comer-lora_rtmdet-p2-6e-soda.yaml` | as above, weights still frozen | as above, plus LoRA (r = 8, α = 16, `qkv`/`proj`/`fc1`/`fc2`, 0.59M) |
+| `vitl-lingbot-comer_rtmdet-p2-6e-soda.yaml` | LingBot-Vision ViT-L/16 (303.2M) | ViT-CoMer-L adapter: CTI after blocks 5/11/17/23, 16 deformable heads, `deform_ratio` 0.5, 1024-channel outputs (38.5M) |
+| `vitl-lingbot-comer-lora_rtmdet-p2-6e-soda.yaml` | as above, weights still frozen | as above, plus the same LoRA (3.15M) |
+
+`LingBotViTCoMer` (`mmrotate/models/backbones/lingbot_vision/`) is a dependency-free re-implementation of the LingBot
+ViT that does not import `lingbot_vision`. Its `checkpoint` is the HF snapshot folder
+(`/mnt/zfs/models/robbyant/lingbot-vision-vit-{small,large}`, which holds `model.pt`), and the weights are loaded with
+strict key matching in `init_weights`.
+- On load, the checkpoint's `qkv.bias_mask` (no key bias) is folded into `qkv.bias`, and the MIM-only `mask_token` is
+  dropped. Every ViT linear is therefore a plain `nn.Linear`, which LoRA can wrap.
+- The outputs match the reference implementation exactly, in fp32 and bf16.
+- The pretraining-time RoPE coordinate augmentation is off by default.
+
 ## Reproduce
 
 ```bash
@@ -389,6 +411,7 @@ Each step runs in `mmrotate-dev:2026.10.24` and skips runs that already have tes
 
 ```bash
 pytest tests/test_models/test_backbones/test_timm_dinov3.py \
+       tests/test_models/test_backbones/test_lingbot_vision.py \
        tests/test_evaluation/test_metrics/test_soda_metric.py \
        tests/test_datasets/test_soda2dota.py \
        tests/test_models/test_detectors/test_soda_dinov3_configs.py

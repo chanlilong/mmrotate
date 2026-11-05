@@ -1,0 +1,8 @@
+# ViT-CoMer + LoRA on LingBot-Vision ViT-L/16: frozen ViT-L weights plus
+# trainable LoRA (rank r, zero-initialised) on every block linear. Everything
+# else is identical to the ViT-L CoMer run.
+_base_: ./vitl-lingbot-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    lora_cfg: {r: 8, alpha: 16, dropout: 0.0, target_modules: [qkv, proj, fc1, fc2]}
