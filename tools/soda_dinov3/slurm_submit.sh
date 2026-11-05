@@ -5,10 +5,12 @@
 # a `collect` job that runs once all of them have ended. Finished runs are
 # skipped inside the jobs, so re-submitting after a failure is safe.
 #
-#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|dcfl|phase2|dump] ...
+#   tools/soda_dinov3/slurm_submit.sh [all|bench|phase1|noinj|seeds|lora|dcfl|phase2|lingbot|dump] ...
 #
 # `dump` re-runs the test split of the finished seed-0 runs with prediction dumps
 # (short DUMP_TIME jobs) and then queues the false_alarms.py analysis.
+# `lingbot` trains the LingBot-Vision ViT-S CoMer run (its test step writes the
+# prediction dump) and then also re-runs the false_alarms.py analysis.
 #
 # Env (defaults for the voltronix cluster): PARTITION, NODELIST (nodes that
 # have IMAGE), IMAGE, WORK, DATA_ROOT, WEIGHTS, TIME (per-run limit),
@@ -64,6 +66,10 @@ for g in "${groups[@]}"; do
             one $CFG/vits-dinov3-comer_rtmdet-p2-nwd-dsl-rka-6e-soda.yaml
             ;;
         noinj) one $CFG/vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml ;;
+        lingbot)
+            one $CFG/vits-lingbot-comer_rtmdet-p2-6e-soda.yaml
+            dumped=1
+            ;;
         dcfl)
             one $CFG/vits-dinov3-comer_rtmdet-p2-dcfl-6e-soda.yaml
             one $CFG/convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda.yaml
