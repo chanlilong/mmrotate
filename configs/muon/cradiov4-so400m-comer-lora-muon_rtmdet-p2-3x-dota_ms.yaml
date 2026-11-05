@@ -1,0 +1,33 @@
+# cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms.yaml trained with MuonAdamW
+# (mmrotate/engine/optimizers/muon_adamw.py):
+#   Muon  : nn.Linear and 1x1 (groups=1) conv weights, LoRA factors (rank >= 16)
+#   AdamW : k x k and depthwise convs, norms, biases, free nn.Parameters
+#           (level_embed, gamma) and the RTMDet prediction convs.
+# adjust_lr_fn=match_rms_adamw scales Muon's update to AdamW's RMS, so both
+# branches share the inherited lr (0.004 / 16), weight decay, warmup and
+# cosine schedule. The train log prints a "MuonAdamW routing" summary.
+_base_: ../cradio/cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms.yaml
+
+custom_imports:
+  imports: [mmrotate.engine.optimizers]
+  allow_failed_imports: false
+
+model:
+  backbone:
+    # Rank >= muon_min_dim so the LoRA factors are Muon-trained (at r=8 they
+    # would fall back to AdamW). alpha / r = 2 as in the r=8 config.
+    lora_cfg: {r: 16, alpha: 32}
+
+optim_wrapper:  # type AmpOptimWrapper / dtype bfloat16 inherited
+  constructor: MuonAdamWOptimWrapperConstructor
+  optimizer:
+    type: MuonAdamW  # lr 2.5e-4 and weight_decay 0.05 inherited, shared by both branches
+    betas: [0.9, 0.999]
+    muon_momentum: 0.95
+    nesterov: true
+    ns_steps: 5
+    adjust_lr_fn: match_rms_adamw
+  paramwise_cfg:  # norm_decay_mult / bias_decay_mult / bypass_duplicate inherited
+    muon_include_keys: [lora_A, lora_B]
+    muon_exclude_keys: [rtm_cls, rtm_reg, rtm_ang]
+    muon_min_dim: 16
