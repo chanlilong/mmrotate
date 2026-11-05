@@ -8,6 +8,8 @@
 # * SyncBN (the CoMer adapter's, and the one RTMDet adds on 2+ GPUs) is reverted
 #   to per-GPU BN: its collectives can deadlock against ZeRO-3's gathers
 #   (accelerator.zero3_sync_bn, default revert).
+# * KNOWN ISSUE: the same RTMDet setup hangs on 2+ GPUs under ZeRO-3 (data-dependent
+#   backward, see docs/en/user_guides/accelerate_training.md); 1 GPU works. Prefer ZeRO-2.
 # * zero3_leaf_modules (not needed here): classes gathered as a whole, for code
 #   that reads a sub-module's weights without calling it. Do NOT list the whole
 #   backbone (CRADIOv4CoMer): with its 4 outputs and a no-grad image input,

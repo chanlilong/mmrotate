@@ -284,6 +284,7 @@ shared filesystem.
 | `ModuleNotFoundError: mpi4py` with DeepSpeed | Fixed: without a launcher, the runner now sets up a 1-process rendezvous itself. Under `accelerate launch` the launcher sets it. |
 | `The size of tensor a (0) must match ...` in backward with ZeRO-3 | A parameter was re-partitioned before its gradient arrived. Do not put the whole backbone in `zero3_leaf_modules`. |
 | NCCL watchdog timeout under ZeRO-3, one rank in `SyncBatchNorm` backward (`ALLREDUCE`), the other in `_ALLGATHER_BASE` | SyncBN and ZeRO-3 collectives interleaved differently on the ranks. Fixed by the default `zero3_sync_bn: revert`; do not set `keep` with data-dependent models. |
+| ZeRO-3 on 2+ GPUs: NCCL timeout with one rank in `_REDUCE_SCATTER_BASE` (`independent_gradient_partition_epilogue`) and the other in `_ALLGATHER_BASE` (`pre_sub_module_backward_function`) | Data-dependent backward: a module ran backward on one rank only. Not solved yet for RTMDet; use ZeRO-2 or DDP. Set `timeout_minutes` low (e.g. 10) while debugging so a hang fails fast. |
 | `the ranks hold different samples` | Ranks read different annotation files: different data roots, or `indices` / filters applied to an unsorted listing. |
 | validation `TimeoutError ... still missing part_000NN` | That rank died or is still evaluating, or `eval.dir` is not shared across nodes. Raise `eval.timeout_minutes` for very slow metrics. |
 | `KeyError: unknown accelerator keys` | A typo in the `accelerator:` block; the message lists the valid keys. |
@@ -321,7 +322,33 @@ All runs used the `2026.11.05` image on RTX PRO 6000 Blackwell GPUs.
   0.03 % of the raw weights). The bf16 checkpoint gives mAP 0.1425 through both
   the stock `tools/test.py` and `tools/accelerate/test.py`, with identical
   per-class tables. The ZeRO-3 checkpoint loads in the stock `tools/test.py`.
-- **2 GPUs (slurm, SODA-A ViT-S CoMer LoRA):** see the table appended below.
+- **2 GPUs (slurm on `may`, SODA-A ViT-S/16 DINOv3 CoMer LoRA, batch 8 per GPU,
+  1600-image train subset, 2 epochs, validation on the full val split):**
+
+  | recipe | s/iter | memory (MB) | val mAP / AP50 (epoch 2) | resume to epoch 3 |
+  | ------ | -----: | ----------: | ------------------------ | ----------------- |
+  | DDP bf16 | 0.62 | 13 872 | 0.0092 / 0.0481 | ✓ (0.0203 / 0.1045) |
+  | ZeRO-2 | 0.89 | 20 998 | 0.0061 / 0.0350 | ✓, DeepSpeed state restored (0.0081 / 0.0453) |
+  | MuonAdamW (DDP) | 0.63 | 13 841 | 0.0062 / 0.0364 | |
+  | ZeRO-3 | ~4 | 17 200 | **hangs** in epoch 1 (see below) | |
+
+  The mAP is low because these are 200-iteration smoke runs, and the recipes
+  differ in numerics, so the runs are not expected to match each other.
+
+  Bridge check: the DDP `epoch_2.pth` evaluated on `val_mini` (324 images) by
+  the stock `tools/test.py` on 1 GPU and by `tools/accelerate/test.py` on 2 GPUs
+  gives the same 16 SODA-A metrics, digit for digit. They also equal the
+  validation logged during training.
+
+  **ZeRO-3 on 2+ GPUs does not work with these RTMDet detectors yet.** The first
+  hang was SyncBN against a ZeRO-3 gather; that is fixed (`zero3_sync_bn`).
+  The second hang, after about 60 iterations, has one rank finished with backward
+  and reduce-scattering gradients while the other still gathers one more weight
+  (147 456 elements) for a module backward. So the ranks ran a different set of
+  module backwards in that iteration: something in the model's backward depends
+  on the data. ZeRO-3 needs the same sequence on every rank. ZeRO-3 works on
+  1 GPU. For these models, whose trainable part is about 20 M parameters, ZeRO-2
+  gives most of the memory saving anyway.
 
 ## Merging into another fork
 
