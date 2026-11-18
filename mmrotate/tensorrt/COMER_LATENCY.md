@@ -1,5 +1,29 @@
 # Why ViT-S CoMer is 4-10x slower than ConvNeXt-T
 
+> **Update: the TensorRT regression of section 4 is fixed, and the budget is now measured.**
+> With fused attention and the deformable-attention plugin (items 3 and 4 of section 5, see
+> `TENSORRT.md`), the full CoMer fp16 engine runs at 56.0 images / s on an RTX 3090 (batch 8,
+> 800x800), against 20.6 with the old export and 32.0 for torch fp16 AMP. ConvNeXt-T runs at 185.
+> `tools/tensorrt/profile_engine.py` on the two engines (ms per batch of 8, TensorRT's layer
+> profiler):
+>
+> | component | old export | fused attention + plugin |
+> |---|---:|---:|
+> | ViT attention (12 blocks, with qkv / proj) | 131.8 | 16.0 |
+> | deformable attention (12 calls) | ~200 | 20.6 |
+> | rest of the backbone (ViT MLPs and norms, adapter convs / norms / FFNs) | 66.1 | 75.0 |
+> | neck | 24.3 | 24.2 |
+> | head | 6.4 | 6.3 |
+> | total while profiling | 439 | 159 |
+>
+> So the two export patches cost about 300 ms of the old engine's 390 ms, more than section 4
+> estimated (attention ~10 ms per block, each `grid_sample` deformable attention ~16 ms). What
+> remains is the structural cost described in sections 1 and 2: the adapter and ViT MLP layers
+> (75 ms over ~2000 layers, none above 2.2 ms), the 384-channel neck (24 ms) and the attention
+> itself (16 ms). CoMer is now 3.3x slower than ConvNeXt-T in TensorRT, close to its 3.1x FLOPs.
+> The rest of this note is the original analysis, written before any GPU timing was available;
+> its speed numbers are from an RTX PRO 6000 Blackwell.
+
 `TENSORRT.md` reports, at batch 8 and 800x800 (images / s):
 
 | model | torch fp16 AMP | TRT fp16 |
