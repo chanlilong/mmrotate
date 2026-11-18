@@ -24,6 +24,9 @@ from torch import Tensor, nn
 from mmrotate.registry import MODELS
 from mmrotate.utils import register_all_modules
 
+from .attention import upgrade_attention_nodes
+from .plugins.msda import PLUGIN_NAMESPACE
+
 # Nesting of the engine outputs: ``None`` is a tensor leaf, a list a tuple.
 OutputSpec = list | None
 INPUT_NAME = 'inputs'
@@ -183,5 +186,7 @@ def export_onnx(
             output_names=names,
             opset_version=opset,
             do_constant_folding=True,
+            custom_opsets={PLUGIN_NAMESPACE: 1},
         )
+    upgrade_attention_nodes(str(onnx_file))
     return spec, names

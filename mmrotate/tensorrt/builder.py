@@ -21,6 +21,7 @@ def build_engine(
     timing_cache: str | Path | None = None,
     tf32: bool = True,
     verbose: bool = False,
+    plugins: str | None = None,
 ) -> None:
     """Parse ``onnx_file`` and serialize a static-shape engine to ``engine_file``.
 
@@ -32,8 +33,16 @@ def build_engine(
         timing_cache: Optional timing cache file, read if present and updated.
         tf32: Allow TF32 for fp32 convolutions / matmuls (TensorRT's default).
         verbose: Verbose TensorRT logging.
+        plugins: Implementation of this package's Python plugins
+            (:mod:`~mmrotate.tensorrt.plugins`) to build into the engine:
+            ``'aot'`` (kernels embedded in the engine), ``'jit'`` (Python
+            callbacks at run time) or ``None`` when the graph has no plugin
+            nodes.
     """
     import tensorrt as trt
+
+    if plugins not in (None, 'aot', 'jit'):
+        raise ValueError(f'Unknown plugin implementation {plugins!r}')
 
     trt_logger = trt.Logger(trt.Logger.VERBOSE if verbose else trt.Logger.WARNING)
     trt.init_libnvinfer_plugins(trt_logger, '')
@@ -43,6 +52,12 @@ def build_engine(
         flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
     if hasattr(trt.NetworkDefinitionCreationFlag, 'EXPLICIT_BATCH'):  # TensorRT < 10
         flags |= 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    if plugins is not None:
+        from .plugins import register_plugins
+
+        register_plugins()
+        prefer = 'PREFER_AOT_PYTHON_PLUGINS' if plugins == 'aot' else 'PREFER_JIT_PYTHON_PLUGINS'
+        flags |= 1 << int(getattr(trt.NetworkDefinitionCreationFlag, prefer))
     network = builder.create_network(flags)
     parser = trt.OnnxParser(network, trt_logger)
     if not parser.parse_from_file(str(onnx_file)):
@@ -53,6 +68,8 @@ def build_engine(
     if workspace_gb is not None:
         config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_gb * (1 << 30)))
     config.builder_optimization_level = opt_level
+    # Layer names and fusions for engine_report (no effect on the engine's speed).
+    config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     if not tf32:
         config.clear_flag(trt.BuilderFlag.TF32)
     cache = None

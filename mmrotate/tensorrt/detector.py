@@ -82,6 +82,11 @@ class TRTSingleStageDetector(SingleStageDetector):
             if device.type != 'cuda':
                 raise RuntimeError('Move the model to a CUDA device before running it')
             self._check_environment(device)
+            if self.meta.get('plugins') == 'jit':
+                # Python-callback plugins must be registered before deserialising.
+                from .plugins import register_plugins
+
+                register_plugins()
             self._engine = TRTEngine(self.engine_file, device)
         return self._engine
 

@@ -13,3 +13,7 @@ ignore = ["N803", "N806", "N812"]
 
 [lint.isort]
 known-first-party = ["mmrotate"]
+
+[lint.per-file-ignores]
+# Triton kernels: pointer / scalar arguments are typed by the launch signature.
+"**/msda_kernel.py" = ["ANN001"]
