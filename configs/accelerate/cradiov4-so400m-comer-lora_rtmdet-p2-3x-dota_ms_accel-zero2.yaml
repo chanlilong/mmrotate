@@ -1,0 +1,21 @@
+# DeepSpeed ZeRO-2 version of ..._accel-bf16.yaml: optimizer state and
+# gradients are sharded over the ranks; every rank keeps the full fp32 weights,
+# so EMA, SyncBN and evaluation are unchanged. bf16 comes from DeepSpeed's
+# torch_autocast section (filled in from mixed_precision), not DeepSpeed's
+# bf16 mode, which would cast the whole detector to bf16.
+#
+# Filled automatically: train_micro_batch_size_per_gpu (train_dataloader.batch_size),
+# gradient_accumulation_steps, gradient_clipping (optim_wrapper.clip_grad),
+# torch_autocast. Do not put an optimizer / scheduler here: mmengine builds them.
+_base_: ./cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
+
+accelerator:
+  deepspeed:
+    zero_optimization:
+      stage: 2
+      overlap_comm: true
+      contiguous_gradients: true
+      reduce_bucket_size: 50000000
+      allgather_bucket_size: 50000000
+      # Uncomment to keep the AdamW state in CPU RAM (AdamW -> DeepSpeedCPUAdam):
+      # offload_optimizer: {device: cpu, pin_memory: true}

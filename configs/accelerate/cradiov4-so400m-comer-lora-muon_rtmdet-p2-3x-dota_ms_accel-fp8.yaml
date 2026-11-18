@@ -1,0 +1,8 @@
+# MuonAdamW + fp8 (DDP, experimental): torchao's Float8Linear keeps each weight
+# as an ordinary fp32 nn.Parameter, so MuonAdamW's routing (decided by module
+# type before the conversion) and its 2D updates are unaffected.
+_base_: ./cradiov4-so400m-comer-lora-muon_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
+
+accelerator:
+  mixed_precision: fp8
+  fp8: {recipe: tensorwise, exclude: [], min_dim: 16}

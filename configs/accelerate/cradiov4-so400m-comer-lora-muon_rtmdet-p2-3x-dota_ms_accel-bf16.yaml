@@ -1,0 +1,19 @@
+# configs/muon/cradiov4-so400m-comer-lora-muon_rtmdet-p2-3x-dota_ms.yaml (MuonAdamW)
+# trained through HF accelerate: DDP + bf16 autocast.
+#
+# Muon needs every weight matrix whole on each rank (Newton-Schulz
+# orthogonalises the full matrix), which plain DDP gives. DeepSpeed ZeRO 1-3
+# flatten and shard the parameters, so MuonAdamW + ZeRO is rejected at start-up
+# (ZeRO stage 0 would work but adds nothing over DDP).
+_base_: ../muon/cradiov4-so400m-comer-lora-muon_rtmdet-p2-3x-dota_ms.yaml
+
+runner_type: mmrotate.AccelerateRunner
+custom_imports:
+  imports: [mmrotate.engine.optimizers, mmrotate.accelerate]
+  allow_failed_imports: false
+
+accelerator:
+  mixed_precision: bf16
+  gradient_accumulation_steps: 1
+  ddp_kwargs: {find_unused_parameters: false, broadcast_buffers: false}
+  eval: {bridge: parquet, timeout_minutes: 240}

@@ -1,0 +1,6 @@
+# DeepSpeed ZeRO-2 version of vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml.
+_base_: ./vits-dinov3-comer-lora_rtmdet-p2-6e-soda_accel-bf16.yaml
+
+accelerator:
+  deepspeed:
+    zero_optimization: {stage: 2, overlap_comm: true, contiguous_gradients: true}

@@ -1,0 +1,17 @@
+# fp8 version of ..._accel-bf16.yaml (DDP, experimental): torchao converts every
+# eligible nn.Linear (both dims divisible by 16) to Float8Linear inside a bf16
+# autocast; convs, norms and everything else stay bf16. Needs an sm_89+ GPU
+# (Ada / Hopper / Blackwell) and torchao (in the 2026.11.05 dev image).
+#
+# In this LoRA config the ViT blocks are LoRALinear (not nn.Linear), so they
+# stay bf16; fp8 covers the CoMer adapter / deformable-attention linears.
+# torchao fp8 is fastest under torch.compile; measure before adopting it.
+# Not available with DeepSpeed (that needs TransformerEngine).
+_base_: ./cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
+
+accelerator:
+  mixed_precision: fp8
+  fp8:
+    recipe: tensorwise  # torchao Float8LinearConfig recipe: tensorwise | rowwise | rowwise_with_gw_hp
+    exclude: []         # regexes of module names to keep in bf16
+    min_dim: 16

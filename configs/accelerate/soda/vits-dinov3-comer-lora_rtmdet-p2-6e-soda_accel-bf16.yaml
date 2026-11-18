@@ -1,0 +1,16 @@
+# configs/soda_dinov3/vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml through HF
+# accelerate: DDP + bf16 autocast. Per-GPU batch 8 as in the base config, so 2 GPUs
+# train with batch 16 (set auto_scale_lr.enable or --auto-scale-lr to scale the lr).
+#   accelerate launch --num_processes 2 tools/accelerate/train.py <this config>
+#   sbatch tools/accelerate/slurm_train.sbatch <this config>
+_base_: ../../soda_dinov3/vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml
+
+runner_type: mmrotate.AccelerateRunner
+custom_imports:
+  imports: [mmrotate.accelerate]
+  allow_failed_imports: false
+
+accelerator:
+  mixed_precision: bf16
+  ddp_kwargs: {find_unused_parameters: false, broadcast_buffers: false}
+  eval: {bridge: parquet, timeout_minutes: 240}

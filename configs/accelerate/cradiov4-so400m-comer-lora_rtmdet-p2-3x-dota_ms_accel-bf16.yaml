@@ -1,0 +1,28 @@
+# cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms.yaml trained through HF accelerate:
+# DDP + bf16 autocast (fp32 master weights), the accelerate equivalent of the
+# base config's AmpOptimWrapper(dtype=bfloat16) under mmengine DDP.
+#
+#   python tools/accelerate/train.py <this config>                               # 1 GPU
+#   accelerate launch --num_processes 2 tools/accelerate/train.py <this config>  # 2 GPUs
+#   accelerate launch --config_file tools/accelerate/launch_configs/multi_node.yaml \
+#       --machine_rank $NODE_RANK tools/accelerate/train.py <this config>        # multi-node
+#
+# train_dataloader.batch_size (2) stays per GPU, as with mmengine DDP:
+# the global batch is num_processes x 2 x gradient_accumulation_steps.
+_base_: ../cradio/cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms.yaml
+
+runner_type: mmrotate.AccelerateRunner  # also lets the stock tools/train.py run it
+custom_imports:
+  imports: [mmrotate.accelerate]
+  allow_failed_imports: false
+
+accelerator:
+  mixed_precision: bf16          # no | bf16 | fp16 | fp8 (null: from optim_wrapper)
+  gradient_accumulation_steps: 1
+  ddp_kwargs: {find_unused_parameters: false, broadcast_buffers: false}
+  timeout_minutes: 60            # NCCL collective timeout
+  data_order: auto               # re-sort the dataset if ranks list it differently
+  eval:
+    bridge: parquet              # parquet (files, no NCCL gather) | mmengine (collect_results)
+    dir: null                    # default work_dir; must be shared by all nodes
+    timeout_minutes: 240         # how long ranks wait for rank 0's metric
