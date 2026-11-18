@@ -323,14 +323,53 @@ same model, full bf16 train step, one 96 GB GPU):
 
 Images are assigned one after another, so the peak is set by the densest image of
 the batch, not by the batch total. `expandable_segments` does not lower the peak.
-For datasets with thousands of targets per image, reduce the number of targets per
-training image (smaller patches or crops), or use a memory-bounded assigner.
+
+**For dense images use `ChunkedDynamicSoftLabelAssigner`**
+(`mmrotate/models/task_modules/chunked_dsl/`). It computes the same costs over
+slices of targets (memory per slice set by `chunk_budget_mb`, default 1024) and
+gives **the same assignment** as `mmdet.DynamicSoftLabelAssigner`. Only the
+assigner type changes, its other settings stay:
+
+```yaml
+model:
+  train_cfg:
+    assigner: {type: ChunkedDynamicSoftLabelAssigner}  # topk, iou_calculator, ... unchanged
+```
+
+`RankingDynamicSoftLabelAssigner` (NWD-RKA) is built on it and is chunked by
+default. Checks of "same assignment":
+
+- `tests/test_models/test_task_modules/test_chunked_dsl/` compares against mmdet's
+  assigner and the previous `RankingDynamicSoftLabelAssigner`, on CPU and CUDA, for
+  slices from 1 target to all, bf16 autocast, and a differentiable NWD IoU.
+- Real ConvNeXt-L training steps on SODA-A 1408 (the 300 densest patches with up to
+  1038 targets, plus 700 random ones) ran both assigners on every image. Positives,
+  labels and matched IoUs were bit-identical on 1000/1000 images for DSL and for RKA.
+
+Same synthetic batches as above (step peak, nvidia-smi with the default allocator,
+s/step):
+
+| targets per image | 8-32 px: mmdet DSL | 8-32 px: chunked | 32-96 px: mmdet DSL | 32-96 px: chunked |
+| ---: | --- | --- | --- | --- |
+| 250 | 6.8 GB, 7.2 GB, 0.22 s | 6.3 GB, 6.9 GB, 0.23 s | 9.7 GB, 10.4 GB, 0.28 s | 6.7 GB, 7.3 GB, 0.27 s |
+| 500 | 7.8 GB, 8.5 GB, 0.34 s | 6.7 GB, 7.2 GB, 0.34 s | 18.1 GB, 20.1 GB, 0.47 s | 7.0 GB, 7.8 GB, 0.47 s |
+| 1000 | 13.2 GB, 18.7 GB, 0.65 s | 6.8 GB, 7.8 GB, 0.65 s | 38.5 GB, 69.1 GB, 0.88 s | 8.1 GB, 10.9 GB, 0.88 s |
+| 2000 | 31.3 GB, 56.2 GB, 1.27 s | 7.6 GB, 9.9 GB, 1.26 s | 78.1 GB, 85.8 GB, 1.74 s | 10.7 GB, 16.3 GB, 1.74 s |
+| 3000 | 58.3 GB, 65.6 GB, 1.97 s | 9.4 GB, 13.6 GB, 1.97 s | OOM | 13.4 GB, 16.2 GB, 2.58 s |
+| 4000 | OOM | 11.6 GB, 13.9 GB, 2.69 s | OOM | 16.0 GB, 26.4 GB, 3.36 s |
+| 8000 | OOM | 22.2 GB, 38.6 GB, 5.94 s | OOM | 26.3 GB, 46.6 GB, 6.77 s |
+
+`RankingDynamicSoftLabelAssigner` gives the same memory and up to 8 % more time (its
+NWD ranking). Chunking itself costs no time for DSL and up to 3 % for RKA, compared
+with the unchunked assigners. The memory that is left grows with priors-inside-targets x targets.
+It comes from the 2D cost and IoU matrices of dynamic-k matching, which are kept
+whole so the result stays the same.
 
 ## Troubleshooting
 
 | symptom | cause / fix |
 | ------- | ----------- |
-| nvidia-smi memory rises in steps during the first epoch, e.g. 14 GB -> 40 GB, then stays | Not a leak: dense images (many targets) need more memory in the label assigner, and the caching allocator keeps it. Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. See [GPU memory](#gpu-memory). |
+| nvidia-smi memory rises in steps during the first epoch, e.g. 14 GB -> 40 GB, then stays | Not a leak: dense images (many targets) need more memory in the label assigner, and the caching allocator keeps it. Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, and use `ChunkedDynamicSoftLabelAssigner` for dense datasets. See [GPU memory](#gpu-memory). |
 | `ModuleNotFoundError: mpi4py` with DeepSpeed | Fixed: without a launcher, the runner now sets up a 1-process rendezvous itself. Under `accelerate launch` the launcher sets it. |
 | `The size of tensor a (0) must match ...` in backward with ZeRO-3 | A parameter was re-partitioned before its gradient arrived. Do not put the whole backbone in `zero3_leaf_modules`. |
 | NCCL watchdog timeout under ZeRO-3, one rank in `SyncBatchNorm` backward (`ALLREDUCE`), the other in `_ALLGATHER_BASE` | SyncBN and ZeRO-3 collectives interleaved differently on the ranks. Fixed by the default `zero3_sync_bn: revert`; do not set `keep` with data-dependent models. |

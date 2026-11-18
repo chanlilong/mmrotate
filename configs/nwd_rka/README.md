@@ -17,7 +17,7 @@ Everything lives in `mmrotate/models/task_modules/nwd_rka/` and is registered by
 |---|---|
 | `RBboxNWD2D` | IoU-calculator-compatible NWD for rotated **and** horizontal boxes (Gaussian W2), drop-in for any assigner |
 | `RankingAssigner` | RKA for anchor priors (RetinaNet, RPN) and, with `point_prior_scale`, point priors (RTMDet) |
-| `RankingDynamicSoftLabelAssigner` | RTMDet's DSL with each GT's NWD top-k priors added as candidates |
+| `RankingDynamicSoftLabelAssigner` | RTMDet's DSL with each GT's NWD top-k priors added as candidates. Built on `ChunkedDynamicSoftLabelAssigner`: (prior, GT) matrices are computed over GT slices (`chunk_budget_mb`, default 1024; `None` = all at once) with the same assignment, so dense images do not blow up GPU memory |
 | `nms=dict(type='nwd_nms', ...)` | NWD-NMS (from the earlier NWD paper / `mmcv-nwd`), Triton kernel on CUDA, PyTorch fallback, no custom mmcv |
 
 `C` should be close to the training set's mean `sqrt(w * h)`. Estimate it with
