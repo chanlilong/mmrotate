@@ -16,7 +16,7 @@ Contents: [Requirements](#requirements) · [Quick start](#quick-start) ·
 [The `accelerator:` block](#the-accelerator-block) · [What can be combined](#what-can-be-combined) ·
 [How it works](#how-it-works) · [Checkpoints and resuming](#checkpoints-and-resuming) ·
 [Validation and test across ranks](#validation-and-test-across-ranks) ·
-[Troubleshooting](#troubleshooting) · [Verified runs](#verified-runs) ·
+[GPU memory](#gpu-memory) · [Troubleshooting](#troubleshooting) · [Verified runs](#verified-runs) ·
 [Merging into another fork](#merging-into-another-fork)
 
 ## Requirements
@@ -36,6 +36,10 @@ Use the dev image `voltronix-mmrotate-dev:2026.11.05` (built from
 ```bash
 CFG=configs/accelerate/cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
 
+# Recommended for every run: stops the CUDA caching allocator from fragmenting
+# (nvidia-smi otherwise creeps up to ~2x the real peak), see "GPU memory" below
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # 1 GPU (no launcher needed, also with DeepSpeed)
 python tools/accelerate/train.py $CFG
 
@@ -48,8 +52,10 @@ accelerate launch --config_file tools/accelerate/launch_configs/multi_gpu.yaml \
 accelerate launch --config_file tools/accelerate/launch_configs/multi_node.yaml \
     --machine_rank $NODE_RANK --main_process_ip $MAIN_IP tools/accelerate/train.py $CFG
 
-# slurm, one or more nodes (IMAGE=... runs inside the docker image)
+# slurm, one or more nodes (IMAGE=... runs inside the docker image; docker does not
+# inherit the shell env, so pass the allocator setting with DOCKER_ARGS)
 IMAGE=artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.05 \
+DOCKER_ARGS="-e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" \
     sbatch --nodes=1 --gres=gpu:2 tools/accelerate/slurm_train.sbatch $CFG
 
 # resume from the latest checkpoint in work_dir (or --resume path/to/epoch_N.pth)
@@ -277,10 +283,54 @@ the stock `tools/test.py` and `tools/accelerate/test.py` print identical
 per-class tables. For multi-node runs, `work_dir` (or `eval.dir`) must be on a
 shared filesystem.
 
+## GPU memory
+
+**Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` for every run** (see the
+quick start; with `slurm_train.sbatch` and `IMAGE`, pass it in `DOCKER_ARGS`). It
+costs nothing in speed and keeps nvidia-smi close to the real peak.
+
+With RTMDet on dense images, GPU memory in nvidia-smi rises in steps over the first
+hundreds of iterations and then levels off. **This is not a leak.** The memory a
+training step needs depends on the number of targets in the image. PyTorch's
+caching allocator keeps (reserves) the memory of the densest batch seen so far and,
+by default, fragments it. 2-GPU DDP bf16 run, frozen DINOv3 ConvNeXt-L, SODA-A
+1408x1408 patches, batch 2 per GPU, 2000 iterations (rank 0):
+
+| run | allocated between iterations | largest step peak | nvidia-smi at the end | s/iter |
+| --- | --- | --- | --- | --- |
+| AccelerateRunner | 2.17 GB, flat | 11.5 GB | 22.8 GB | 0.219 |
+| stock mmengine `Runner` | 2.17 GB, flat | 11.5 GB | 22.7 GB | 0.220 |
+| AccelerateRunner + `expandable_segments` | 2.15 GB, flat | 11.5 GB | 13.0 GB | 0.224 |
+
+The step peak itself comes from the label assigner (`DynamicSoftLabelAssigner` with
+`RBboxOverlaps2D`). It builds priors x targets matrices, and with stride-4 (P2)
+heads a 1408 image has ~164k priors. The number of priors that fall inside a target
+grows with the target count and size, so above a few hundred targets the cost grows
+faster than linearly. Synthetic batches (2 images, N random rotated targets each,
+same model, full bf16 train step, one 96 GB GPU):
+
+| targets per image | 8-32 px targets: step peak (assigner part) | nvidia-smi, default / expandable | 32-96 px targets: step peak (assigner part) | s/step (8-32 px) |
+| ---: | --- | --- | --- | ---: |
+| 0 | 5.9 GB (0.0) | 6.5 / 5.9 GB | 5.9 GB (0.0) | 0.11 |
+| 100 | 6.2 GB (0.4) | 6.6 / 6.2 GB | 6.6 GB (0.7) | 0.16 |
+| 250 | 6.8 GB (0.9) | 7.2 / 6.7 GB | 9.7 GB (3.9) | 0.22 |
+| 500 | 7.8 GB (1.9) | 8.5 / 7.9 GB | 18.1 GB (12.3) | 0.34 |
+| 1000 | 13.2 GB (7.3) | 18.7 / 13.8 GB | 38.5 GB (32.7) | 0.65 |
+| 1500 | 21.0 GB (15.2) | 37.2 / 22.5 GB | 58.8 GB (53.0) | 0.96 |
+| 2000 | 31.3 GB (25.5) | 56.2 / 33.7 GB | 78.1 GB (72.3) | 1.27 |
+| 3000 | 58.3 GB (52.5) | 65.6 / 62.9 GB | OOM | 1.97 |
+| 4000 | 90.9 GB (85.1) | OOM / 90.0 GB | OOM | 2.82 |
+
+Images are assigned one after another, so the peak is set by the densest image of
+the batch, not by the batch total. `expandable_segments` does not lower the peak.
+For datasets with thousands of targets per image, reduce the number of targets per
+training image (smaller patches or crops), or use a memory-bounded assigner.
+
 ## Troubleshooting
 
 | symptom | cause / fix |
 | ------- | ----------- |
+| nvidia-smi memory rises in steps during the first epoch, e.g. 14 GB -> 40 GB, then stays | Not a leak: dense images (many targets) need more memory in the label assigner, and the caching allocator keeps it. Set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. See [GPU memory](#gpu-memory). |
 | `ModuleNotFoundError: mpi4py` with DeepSpeed | Fixed: without a launcher, the runner now sets up a 1-process rendezvous itself. Under `accelerate launch` the launcher sets it. |
 | `The size of tensor a (0) must match ...` in backward with ZeRO-3 | A parameter was re-partitioned before its gradient arrived. Do not put the whole backbone in `zero3_leaf_modules`. |
 | NCCL watchdog timeout under ZeRO-3, one rank in `SyncBatchNorm` backward (`ALLREDUCE`), the other in `_ALLGATHER_BASE` | SyncBN and ZeRO-3 collectives interleaved differently on the ranks. Fixed by the default `zero3_sync_bn: revert`; do not set `keep` with data-dependent models. |
