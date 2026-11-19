@@ -32,7 +32,7 @@ from mmengine.registry import init_default_scope
 from mmrotate.tensorrt import engine_report
 from mmrotate.tensorrt import precision as prec
 from mmrotate.tensorrt.attention import ATTENTION_MODES, resolve_attention
-from mmrotate.tensorrt.builder import build_engine
+from mmrotate.tensorrt.builder import HARDWARE_COMPAT, build_engine
 from mmrotate.tensorrt.calibration import build_input_loader, iter_batches
 from mmrotate.tensorrt.deploy import (
     DEPLOY_CFG,
@@ -63,6 +63,12 @@ logger = logging.getLogger('mmrotate.tensorrt')
 # A quantized engine may be this much noisier than the fake-quantized torch model (fp16
 # layers, kernel differences) before the conversion is reported as failed.
 QUANT_NOISE_FACTOR = 4.0
+# Largest noise of a quantized engine measured against the fake-quantized torch model itself.
+# Engines that reproduce it measured <= 0.13 (INT8 / FP8 engines of the DINOv3 models on an
+# RTX PRO 6000 Blackwell); engines TensorRT compiled wrongly >= 0.5 (e.g. INT8 ConvNeXt-T built
+# on Blackwell without --quant-fp32-layers: 5 mAP instead of 37) while only 2-3x noisier than
+# the quantized model's own noise, which QUANT_NOISE_FACTOR lets through.
+QUANT_ENGINE_NOISE_MAX = 0.3
 
 
 def parse_args() -> argparse.Namespace:
@@ -132,6 +138,14 @@ def parse_args() -> argparse.Namespace:
         help='ViT-CoMer deformable attention: the Triton kernel as a TensorRT plugin embedded '
         'in the engine (aot) or called back in Python (jit), or grid_sample ONNX ops; auto '
         'tries aot, then jit',
+    )
+    parser.add_argument(
+        '--hardware-compat',
+        default='none',
+        choices=tuple(HARDWARE_COMPAT),
+        help="GPUs the engine runs on: none (the build GPU's compute capability), ampere+ "
+        '(every Ampere / Ada / Hopper / Blackwell GPU, at some speed cost) or same-cc (GPUs '
+        "with the build GPU's compute capability)",
     )
     parser.add_argument('--opset', type=int, default=19)
     parser.add_argument(
@@ -273,6 +287,8 @@ def main() -> None:
     args = parse_args()
     if args.opt_level is None:
         args.opt_level = 1 if args.precision == 'fp32' else 3
+    if args.precision == 'fp8' and args.hardware_compat == 'ampere+':
+        raise SystemExit('FP8 needs compute capability 8.9+: an fp8 engine cannot run on Ampere')
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s: %(message)s')
     warnings.filterwarnings('ignore', message='.*building extension.*')
     cfg = Config.fromfile(args.config)
@@ -398,6 +414,7 @@ def main() -> None:
                 timing_cache=out_dir / 'timing.cache',
                 tf32=args.precision != 'fp32',
                 plugins=plugins,
+                hardware_compat=args.hardware_compat,
             )
             break
         except Exception:
@@ -438,6 +455,7 @@ def main() -> None:
             **_versions(),
             gpu=props.name,
             compute_capability=f'{props.major}.{props.minor}',
+            hardware_compat=args.hardware_compat,
             opt_level=args.opt_level,
             date=datetime.now(timezone.utc).isoformat(timespec='seconds'),
         ),
@@ -450,11 +468,15 @@ def main() -> None:
         meta['verify'] = verify
         write_meta(out_dir, meta)
         logger.info('Verification against torch fp32:\n%s', json.dumps(verify, indent=2))
-        if quant_raw and verify['noise'] > QUANT_NOISE_FACTOR * verify['noise_torch_quantized']:
+        if quant_raw and (
+            verify['noise'] > QUANT_NOISE_FACTOR * verify['noise_torch_quantized']
+            or verify['noise_vs_torch_quantized'] > QUANT_ENGINE_NOISE_MAX
+        ):
             raise RuntimeError(
                 f'The engine does not reproduce the quantized torch model: output noise '
                 f'{verify["noise"]:.3g} against {verify["noise_torch_quantized"]:.3g} expected '
-                f'from quantization. TensorRT built a different graph (seen when an '
+                f'from quantization, {verify["noise_vs_torch_quantized"]:.3g} against the '
+                f'quantized model itself. TensorRT built a different graph (seen when an '
                 f'unquantized fp16 convolution feeds a quantized layer); try '
                 f'--quant-algo awq-scale with --quant-fp32-layers, or other --quant-exclude '
                 f'patterns. The deploy directory is kept for inspection.'

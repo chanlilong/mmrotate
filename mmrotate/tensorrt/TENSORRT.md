@@ -129,6 +129,26 @@ How to read the result:
 See Results for what these give on the DINOv3 models: which algorithm helped, and how INT8
 compares with fp16 in speed.
 
+### 5. Deploying on other GPUs
+
+An engine runs only on the GPU architecture it was built for. To deploy on a different GPU
+(say, build on Blackwell and run on an Ada or Ampere card), either keep the ONNX graph and
+rebuild the engine on the target, or build one portable engine:
+
+```bash
+# a. Best speed on every GPU: convert once, build an engine per GPU on that GPU
+python tools/tensorrt/convert.py $CONFIG $CKPT --out-dir work_dirs/trt/m_fp16 --precision fp16 \
+    --batch-size 8 --keep-onnx
+python tools/tensorrt/build_engine.py work_dirs/trt/m_fp16 --out-dir work_dirs/trt/m_fp16_ada  # on the Ada GPU
+
+# b. One engine for every Ampere / Ada / Hopper / Blackwell GPU
+python tools/tensorrt/convert.py $CONFIG $CKPT --out-dir work_dirs/trt/m_fp16_any --precision fp16 \
+    --batch-size 8 --hardware-compat ampere+
+```
+
+See [Running on other GPUs](#running-on-other-gpus-ampere-ada-blackwell) for what each option
+costs and why FP8 engines cannot be made portable to Ampere.
+
 ## Using an engine
 
 In Python:
@@ -156,8 +176,9 @@ custom_imports = dict(imports=['mmrotate.tensorrt'], allow_failed_imports=False)
 ```
 
 Paths are relative to the directory, so a deploy directory can be copied elsewhere. An engine
-only runs on the GPU architecture and TensorRT version it was built with; `trt_meta.json` records
-both, and loading warns on a mismatch.
+only runs with the TensorRT version it was built with, and on the GPU architecture it was built
+for unless it was built with `--hardware-compat` (see Running on other GPUs). `trt_meta.json`
+records both, and loading warns on a mismatch.
 
 ### `convert.py` options
 
@@ -177,6 +198,7 @@ both, and loading warns on a mismatch.
 | `--msda` | `auto` | ViT-CoMer deformable attention: `aot` / `jit` TensorRT plugin around the Triton kernel, or `gridsample`; `auto` = `aot`, falling back to `jit` if the build fails |
 | `--verify N` | 8 | compare raw outputs and detections with the torch model on N `--verify-split` images; stored in `trt_meta.json` |
 | `--keep-onnx` | off | keep `end2end.onnx` (+ external weights) next to the engine |
+| `--hardware-compat` | `none` | GPUs the engine runs on: `none` (the build GPU's compute capability), `ampere+` (every compute capability 8.0+ GPU; not with `fp8`), `same-cc` (GPUs with the build GPU's compute capability). See Running on other GPUs |
 | `--opt-level` | 1 for `fp32`, else 3 | TensorRT builder optimization level (see the fp32 note below) |
 | `--workspace-gb` | unlimited | TensorRT workspace limit |
 
@@ -269,13 +291,19 @@ weighted sum in one pass; fp16 / bf16 / fp32 I/O, fp32 math):
   run time. Same speed as `aot`.
 - `--msda gridsample`: the previous export (`grid_sample` per level in fp32), standard ONNX ops.
 
-Two details the ahead-of-time compile needs (`plugins/msda.py`):
+Three details the ahead-of-time compile needs (`plugins/msda.py`):
 
 - Triton >= 3.3 appends two scratch-memory pointers to every kernel signature. TensorRT passes
   only the declared tensors and scalars, so they are stripped from the PTX entry (they are unused).
 - Triton's JIT marks 16-byte aligned pointers, which lets the compiler vectorise the value
   gathers. Without that hint the same kernel is 10x slower (2.7 ms against 0.28 ms per call), so
   the alignment is declared explicitly.
+- The PTX is JIT-compiled by the CUDA driver when the engine is loaded, and a driver rejects PTX
+  of a newer ISA version than its own. Triton writes the version of the `ptxas` it ships for the
+  architecture: 9.3 for Blackwell with Triton 3.8, which a 580 driver (CUDA 13.0, ISA 9.0) cannot
+  load. TensorRT then fails at the first inference (`MSDAFused: Failed to onShapeChange status
+  -1`). The PTX version is therefore capped at 9.0, which every driver that runs TensorRT for
+  CUDA 13 accepts, and at the installed driver's version (`PTX_VERSION_CAP`).
 
 TensorRT 11.4 corrupts the heap when an execution context of an engine with `jit` plugins is
 destroyed without ever having run. `TRTEngine` therefore creates its context on first use.
@@ -299,8 +327,9 @@ algorithms and a mixed-precision search can be added (`mmrotate/tensorrt/quant`)
   weights. `trt_meta.json` lists the excluded layers.
 
 `convert.py --verify` checks a quantized engine against the fake-quantized torch model (`noise`,
-`noise_torch_quantized` in `trt_meta.json`) and **fails** when the engine is much noisier than
-quantization explains. This catches a TensorRT behaviour of partially quantized graphs: when an
+`noise_torch_quantized`, `noise_vs_torch_quantized` in `trt_meta.json`) and **fails** when the
+engine is much noisier than quantization explains (`QUANT_NOISE_FACTOR`) or differs from the
+fake-quantized model by more than `QUANT_ENGINE_NOISE_MAX`. This catches a TensorRT behaviour of partially quantized graphs: when an
 unquantized fp16 layer directly feeds a quantized one, TensorRT fuses the two into an fp16-input /
 int8-output kernel that does not exist for some layers (build error) or gives wrong results (mAP
 near 0). Three consequences:
@@ -314,6 +343,128 @@ near 0). Three consequences:
   kernel beyond 512 tokens.
 - `--quant-auto-exclude` is refused for models with fused attention: fp32-typed linear layers
   around the attention leave it without a kernel. For ViTs, use `--quant-algo awq-scale` alone.
+
+## Running on other GPUs (Ampere, Ada, Blackwell)
+
+A TensorRT engine is machine code for one GPU architecture. TensorRT picks precompiled kernels
+(SASS, the GPU's native instructions) for the compute capability of the GPU it builds on, and
+by default the engine refuses to load anywhere else. PTX (NVIDIA's portable intermediate
+assembly, which the driver can JIT-compile for newer GPUs) is not involved there: so PTX alone
+does not make an engine portable. Two parts of an engine decide where it runs:
+
+| part | what it is | what makes it portable |
+|---|---|---|
+| TensorRT's own layers (convs, gemms, fused attention, ...) | SASS for the build GPU | `--hardware-compat ampere+`: TensorRT only uses kernels it has for every compute capability 8.0+ |
+| the ViT-CoMer deformable-attention plugin (`--msda aot`) | PTX compiled by Triton, JIT-compiled by the driver when the engine loads | compiling the PTX for `sm_80`: the driver JIT-compiles sm_80 PTX for any newer GPU |
+
+The plugin PTX is where PTX does matter. By default Triton compiles for the GPU it runs on, and
+from sm_90 on it uses the architecture-specific ISA (`.target sm_120a` on Blackwell), which no
+other GPU can run. `--hardware-compat ampere+` therefore also compiles the plugin for `sm_80`
+(`plugins.msda.plugin_ptx_arch`). The PTX ISA version is capped at what the driver accepts (see
+Deformable attention).
+
+### Three ways to deploy on several GPUs
+
+1. **Build per GPU from the ONNX graph (recommended; the fastest engine everywhere).** The ONNX
+   graph does not depend on the GPU: precision, INT8 / FP8 Q/DQ nodes and plugin nodes are all
+   in it. Convert once with `--keep-onnx`, then build the engine on each target GPU with
+   `tools/tensorrt/build_engine.py`. That needs TensorRT (plus Triton and this package for
+   ViT-CoMer), but no checkpoint, dataset or ModelOpt, and takes the time of a TensorRT build
+   (on the RTX 6000 Ada: 72 s / 164 s for the ConvNeXt-T fp16 / INT8 engines, 144 s / 261 s
+   for CoMer):
+
+   ```bash
+   python tools/tensorrt/convert.py $CONFIG $CKPT --out-dir work_dirs/trt/m_fp16 \
+       --precision fp16 --batch-size 8 --keep-onnx           # once, on any GPU
+   python tools/tensorrt/build_engine.py work_dirs/trt/m_fp16 \
+       --out-dir work_dirs/trt/m_fp16_sm89                    # on each target GPU
+   python tools/tensorrt/test_trt.py work_dirs/trt/m_fp16_sm89   # check it there
+   ```
+
+   `build_engine.py` records the new GPU in `trt_meta.json` (`build.rebuilt_from` keeps the
+   source) and checks the outputs are finite. The verification of the source build is kept as
+   `verify_source_engine`; re-run `test_trt.py` on the target to check accuracy.
+
+2. **One portable engine: `--hardware-compat ampere+`.** One file for every Ampere, Ada, Hopper
+   and Blackwell GPU (compute capability 8.0+), built on any of them. It is slower, because
+   TensorRT may only pick kernels that exist for all of these GPUs (see the measurements below),
+   and fused attention is kept. Use it when you cannot run a build on the target.
+
+3. **`--hardware-compat same-cc`**: the engine runs on other GPUs with the build GPU's compute
+   capability, e.g. RTX PRO 6000 Blackwell and RTX 5090 (both 12.0), but not B200 (10.0) or any
+   Ada GPU. On the build GPU it is as fast as a default engine (within 1%), so it is the choice
+   for a fleet of one GPU generation. (Only measured on the build GPU: no second 12.0 GPU model
+   was available.)
+
+`trt_meta.json` records `build.hardware_compat`; loading an engine on a GPU its level does not
+cover warns before TensorRT refuses it.
+
+### Limits
+
+- **FP8 needs compute capability 8.9+** (Ada, Hopper, Blackwell): an FP8 engine can never run on
+  Ampere, and `convert.py` refuses `--precision fp8 --hardware-compat ampere+`. Weight-only FP8
+  (as in the Marlin W8A16 kernels of LLM servers) does not change that in a useful way: Ampere
+  would still compute in fp16, and only the weight reads get smaller. These detectors process
+  batches of 800x800 images, where the activations are what is moved (a ViT-S linear layer
+  reads ~15 MB of activations against ~0.3 MB of weights), so there is nothing to gain. On
+  Ampere, use INT8 (AWQ, see INT8) or fp16.
+- **Same TensorRT version.** Hardware compatibility does not cover TensorRT versions. TensorRT's
+  version-compatible mode (lean runtime) was not tried: it restricts plugins, and the
+  deformable-attention plugin is a Python plugin.
+- **Driver.** TensorRT for CUDA 13 needs a CUDA 13.0 driver (580+). The plugin PTX is
+  capped at ISA 9.0 (and at the build machine's driver), which such a driver accepts. The
+  driver JIT-compiles it once when the engine loads (a fraction of a second).
+- `--msda jit` engines launch the kernel through Triton at run time, which compiles it for the
+  GPU at hand. With `ampere+` they are portable too, but need Triton and this package on the
+  target.
+
+### Measured: Blackwell-built engines on an RTX 6000 Ada
+
+Engines of the Blackwell results (see Results) taken as they are to an RTX 6000 Ada (compute
+capability 8.9, driver 580.159), next to engines rebuilt there from the kept ONNX with
+`build_engine.py` (`run_matrix.sh portable`). Same `val_mini` evaluation and `bench.py --e2e`,
+batch 8, images / s:
+
+| model | engine | network | end to end | mAP x 100 |
+|---|---|---:|---:|---:|
+| ConvNeXt-T DINOv3 | torch fp32 | 79.2 | 69.5 | |
+| | torch fp16 AMP | 181.0 | 130.4 | |
+| | fp16, default build on Blackwell | does not load | | |
+| | fp16 `ampere+`, built on Blackwell | 222.1 | 154.1 | 38.45 |
+| | fp16, rebuilt on Ada | 232.3 | 151.6 | 38.40 |
+| | INT8 AWQ `ampere+`, built on Blackwell | 279.4 | 177.7 | 5.35 |
+| | INT8 AWQ, rebuilt on Ada | 257.3 | 163.8 | **37.42** |
+| ViT-S DINOv3 CoMer-LoRA | torch fp32 | 20.8 | 19.9 | |
+| | torch fp16 AMP | 41.6 | 38.0 | |
+| | fp16, default build on Blackwell | does not load | | |
+| | fp16 `ampere+`, built on Blackwell | 65.8 | 60.8 | 38.32 |
+| | fp16, rebuilt on Ada | 65.2 | 58.4 | 38.30 |
+| | INT8 AWQ `ampere+`, built on Blackwell | 70.8 | 63.6 | 37.49 |
+| | INT8 AWQ, rebuilt on Ada | 58.0 | 51.6 | 37.55 |
+
+- **The portable engines work as intended.** Built on Blackwell, they load on Ada without a
+  warning, including the CoMer deformable-attention plugin (sm_80 PTX JIT-compiled by the
+  driver), with all 12 attention calls still fused. They give the same mAP as on Blackwell
+  (within 0.1). The default Blackwell engines are refused: `TRTSingleStageDetector` warns that
+  the engine is for compute capability 12.0 and points to `build_engine.py`, then TensorRT fails
+  to deserialize it.
+- **`ampere+` costs speed on the newest GPU, not on the older one.** On Ada the portable fp16
+  engines are as fast as engines built there (-4% / +1%), while on Blackwell they cost 16-19%.
+  The kernels every Ampere+ GPU can run are close to what Ada would pick anyway, but leave
+  Blackwell's own kernels unused.
+- **A rebuild on the target is not always faster.** The CoMer INT8 engine rebuilt on Ada was
+  slower than the portable one built on Blackwell, in two builds (58 vs 73 network img/s, same
+  mAP), and `--opt-level 5` made it slower still (53). TensorRT's kernel selection is not
+  monotonic in the choices it is given, so benchmark (`bench.py`) the engine you deploy.
+- **But INT8 engines should be built on (or for) their GPU family**: the ConvNeXt-T INT8 AWQ
+  `ampere+` engine carries the Blackwell build's miscompilation to Ada (5.35 mAP), while the
+  same ONNX built on Ada gives 37.42 (see the Blackwell findings). Run `test_trt.py` on the
+  target whatever the option.
+- On Ada, TensorRT fp16 is 1.3x (ConvNeXt-T) and 1.6x (CoMer) faster than torch fp16 AMP.
+- **Ampere was not tested** (no Ampere GPU on this cluster). The engines are built for it
+  (`ampere+` covers compute capability 8.0+, and the plugin PTX targets sm_80), but run
+  `test_trt.py` and `bench.py` on the Ampere GPU before relying on them, e.g. with
+  `run_matrix.sh portable` on that machine.
 
 ## Checking a conversion
 
@@ -333,6 +484,92 @@ near 0). Three consequences:
 Accuracy is therefore compared on dataset metrics with `test_trt.py` (results below).
 
 ## Results
+
+### RTX PRO 6000 Blackwell (TensorRT 11.4, torch 2.14, this version)
+
+RTX PRO 6000 Blackwell Max-Q (compute capability 12.0, driver 580.178), image
+`voltronix-mmrotate-dev:2026.11.05`, run through slurm with `tools/tensorrt/run_matrix.sh` (one
+command per model; see the header of the script). SODA-A `val_mini` (2588 patches of 800x800),
+`tools/test.py` (torch fp32) vs `test_trt.py`, mAP@[.5:.95] x 100. Speed from `bench.py --e2e`
+on dataset images, batch 8, images / s ("network": backbone, neck and head forward; "end to
+end": with box decoding and rotated NMS). INT8 / FP8 calibrated on 64 train images with `max`.
+`noise` is the `verify.noise` of `trt_meta.json` (fp16: ~1e-4); `vs quantized` is
+`verify.noise_vs_torch_quantized`, the engine against the fake-quantized torch model it was built
+from (what TensorRT adds to quantization). Checkpoints: `epoch_6.pth` of
+`work_dirs/soda_dinov3/convnext-t-dinov3_rtmdet-p2-6e-soda` and
+`work_dirs/soda_dinov3/vits-dinov3-comer-lora_rtmdet-p2-6e-soda`.
+
+| model | runtime | network | end to end | mAP x 100 | noise | vs quantized |
+|---|---|---:|---:|---:|---:|---:|
+| ConvNeXt-T DINOv3 | torch fp32 | 125.0 | 105.6 | 38.43 | | |
+| | torch fp16 AMP | 300.0 | 182.4 | | | |
+| | torch bf16 AMP | 313.8 | 186.6 | | | |
+| | **TensorRT fp16** | **470.7** | **226.7** | **38.40** | 1.3e-4 | |
+| | TensorRT fp16, `--hardware-compat ampere+` | 379.2 | 206.0 | 38.42 | 1.2e-4 | |
+| | TensorRT fp16, `--hardware-compat same-cc` | 468.5 | 226.8 | 38.44 | 1.3e-4 | |
+| | TensorRT fp8 | 477.7 | 225.9 | 38.27 | 0.17 | 0.034 |
+| | INT8 plain \*\* | 490.7 | 233.3 | 5.54 | 1.31 | 1.41 |
+| | INT8 `gptq` \*\* | 492.1 | 236.8 | 5.68 | 1.31 | 1.41 |
+| | INT8 `awq-scale` \*\* | 477.1 | 226.3 | 5.35 | 1.28 | 1.38 |
+| | INT8 `awq-scale,gptq` \*\* | 478.5 | 229.1 | 5.27 | 1.26 | 1.36 |
+| | INT8 `awq-scale --quant-fp32-layers` | 428.2 \*\*\* | | 37.33 | 0.49 | 0.13 |
+| | INT8 `awq-scale` + auto-exclude 0.05 (13 of 120 layers fp16) | 414.2 | 214.3 | 38.18 | 0.046 | 0.034 |
+| ViT-S DINOv3 CoMer-LoRA | torch fp32 | 34.0 | 32.4 | 38.33 | | |
+| | torch fp16 AMP | 70.4 | 63.7 | | | |
+| | torch bf16 AMP | 72.9 | 64.9 | | | |
+| | TensorRT fp16 | 128.9 | 108.6 | 38.30 | 1.5e-4 | |
+| | TensorRT fp16, `--hardware-compat ampere+` | 108.6 | 96.7 | 38.31 | 1.5e-4 | |
+| | TensorRT fp16, `--hardware-compat same-cc` | 127.5 | 107.8 | 38.32 | 1.6e-4 | |
+| | **TensorRT fp8** | **141.1** | **117.3** | **38.24** | 0.015 | 0.002 |
+| | INT8 plain \* | 134.3 | 111.5 | 31.27 | 0.56 | 0.51 |
+| | INT8 `gptq` \* | 133.3 | 111.5 | 31.35 | 0.56 | 0.52 |
+| | INT8 `awq-scale` | 130.3 | 109.1 | 37.51 | 0.12 | 0.006 |
+| | INT8 `awq-scale,gptq` | 129.9 | 109.7 | 37.53 | 0.20 | 0.083 |
+
+\* Rejected by `convert.py --verify` (output noise 4.1x that of the fake-quantized model) and
+evaluated anyway. \*\* Passed the check of the time (2.0-2.7x) and were evaluated: TensorRT
+miscompiled them on this GPU (see below); the `vs quantized` check added since rejects all of
+them. \*\*\* Network only, from a separate `bench.py` run in which the fp16 engine gave 465.6.
+Every CoMer engine has its 12 attention calls fused (`mha`) and 12 plugin layers.
+`--quant-auto-exclude` is refused for the fused-attention ViT (see INT8).
+
+Findings:
+
+- **fp16 is the default to deploy.** It reproduces the torch mAP (within 0.03) and is 1.6x
+  (ConvNeXt-T) and 1.8x (CoMer) faster than torch fp16 AMP on the network, 1.2x / 1.7x end to
+  end. Rotated NMS and decoding, the same torch code for every row, take about half of the
+  ConvNeXt-T end-to-end time.
+- **FP8 is the best reduced precision on Blackwell**: within 0.2 mAP of fp16 on both models,
+  and for CoMer the fastest engine (+9% network, +8% end to end). For ConvNeXt-T it is not
+  faster than fp16 (+1.5%).
+- **TensorRT 11.4 miscompiles fully quantized INT8 graphs on Blackwell.** The ConvNeXt-T INT8
+  engines give 5-6 mAP whatever the algorithm, and the first version of this package measured
+  the same 5.5 here. The quantization is not the cause: the INT8 AWQ ONNX graph of the
+  `int8_awq` row, built into an engine on an RTX 6000 Ada (`build_engine.py`), gives **37.42**
+  (as the RTX 3090 did, 37.37), and the same graph with the quantized layers typed fp32
+  (`--quant-fp32-layers`, which keeps TensorRT from fusing across the quantize boundaries, see
+  INT8) gives 37.33 on Blackwell. An `ampere+` engine built on Blackwell carries the error to
+  Ada (5.35 there), so build INT8 engines on the GPU family they run on, or with
+  `--quant-fp32-layers`. The `verify.noise` check of the time let these engines through (the
+  engine was "only" 2-3x noisier than the fake-quantized model, whose own noise is high for
+  ConvNeXt-T: 0.48); `convert.py` now also fails when the engine differs from the
+  fake-quantized model by more than `QUANT_ENGINE_NOISE_MAX` (0.3; correct engines here: <= 0.13,
+  miscompiled: >= 0.5). CoMer's plain and GPTQ INT8 engines (31.3 mAP, 0.51 against their
+  quantized model while AWQ's is 0.006) are probably the same problem; they were not rebuilt
+  elsewhere.
+- **Even when correct, INT8 is not worth it on these models on Blackwell.** The correct ConvNeXt-T
+  engines are slower than fp16 (`--quant-fp32-layers`: -8%, auto-exclude: -12%, for 37.3 / 38.2
+  mAP). On CoMer, AWQ gives 37.5 (-0.8) at fp16 speed (+1%). GPTQ changes nothing measurable,
+  alone or after AWQ (as on the 3090).
+- **Why INT8 does not pay off**: `profile_engine.py` on the INT8 engines shows the convolutions
+  and matmuls getting faster (ConvNeXt-T 9.9 -> 7.5 ms per batch, CoMer 29.1 -> 22.6 ms), and
+  the quantize / dequantize, reformatting and element-wise kernels getting slower by about
+  the same amount (5.7 -> 7.7 ms, 18.6 -> 21.8 ms). FP8 reduces the CoMer matmuls further
+  (20.3 ms) with less overhead. The ViT attention and the deformable attention stay fp16
+  in every variant.
+- **Portable engines**: `ampere+` costs 19% (ConvNeXt-T) and 16% (CoMer) network throughput on
+  Blackwell, with the same mAP; `same-cc` costs nothing. For the same engines on an Ada GPU
+  see Running on other GPUs.
 
 ### RTX 3090 (TensorRT 11.4, torch 2.14, this version)
 

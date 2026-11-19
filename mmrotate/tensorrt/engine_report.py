@@ -18,6 +18,7 @@ from collections.abc import Iterable, Sequence
 import torch
 from torch import Tensor
 
+from .plugins.msda import PLUGIN_NAME
 from .runtime import TRTEngine
 
 # First match wins. TensorRT names fused layers after the ONNX nodes (module
@@ -52,7 +53,12 @@ def _is_mha(layer: dict) -> bool:
 
 
 def _is_plugin(layer: dict) -> bool:
-    return 'plugin' in str(layer.get('LayerType', '')).lower()
+    layer_type = str(layer.get('LayerType', '')).lower()
+    if 'plugin' in layer_type:
+        return True
+    # TensorRT 11.4 on Blackwell places plugins inside a Myelin graph, where they are listed as
+    # ``custom_layer`` named after the ONNX node; other custom layers (e.g. in INT8 graphs) exist.
+    return layer_type == 'custom_layer' and PLUGIN_NAME in str(layer.get('Name', ''))
 
 
 def fusion_summary(layers: Sequence[dict]) -> dict:

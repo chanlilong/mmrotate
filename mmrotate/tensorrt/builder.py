@@ -8,9 +8,31 @@ calibrators) and is supported by TensorRT 10.
 """
 
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# --hardware-compat values -> TensorRT HardwareCompatibilityLevel names.
+HARDWARE_COMPAT = {
+    'none': 'NONE',
+    'ampere+': 'AMPERE_PLUS',
+    'same-cc': 'SAME_COMPUTE_CAPABILITY',
+}
+# Oldest compute capability an ``ampere+`` engine runs on; its plugin PTX targets it.
+AMPERE_PLUS_ARCH = 80
+
+
+def compat_covers(level: str | None, built_cc: str | None, running_cc: str) -> bool:
+    """Whether an engine built for ``built_cc`` at ``level`` runs on ``running_cc``.
+
+    Compute capabilities are ``'major.minor'`` strings (``'12.0'``).
+    """
+    if built_cc is None or built_cc == running_cc:
+        return True
+    if level == 'ampere+':
+        return tuple(map(int, running_cc.split('.'))) >= (AMPERE_PLUS_ARCH // 10, 0)
+    return False
 
 
 def build_engine(
@@ -22,6 +44,7 @@ def build_engine(
     tf32: bool = True,
     verbose: bool = False,
     plugins: str | None = None,
+    hardware_compat: str = 'none',
 ) -> None:
     """Parse ``onnx_file`` and serialize a static-shape engine to ``engine_file``.
 
@@ -38,11 +61,17 @@ def build_engine(
             ``'aot'`` (kernels embedded in the engine), ``'jit'`` (Python
             callbacks at run time) or ``None`` when the graph has no plugin
             nodes.
+        hardware_compat: GPUs the engine may run on: ``'none'`` (the
+            build GPU's compute capability), ``'ampere+'`` (every Ampere or
+            newer GPU; plugin kernels are then compiled to sm_80 PTX) or
+            ``'same-cc'`` (GPUs with the build GPU's compute capability).
     """
     import tensorrt as trt
 
     if plugins not in (None, 'aot', 'jit'):
         raise ValueError(f'Unknown plugin implementation {plugins!r}')
+    if hardware_compat not in HARDWARE_COMPAT:
+        raise ValueError(f'Unknown hardware compatibility {hardware_compat!r}')
 
     trt_logger = trt.Logger(trt.Logger.VERBOSE if verbose else trt.Logger.WARNING)
     trt.init_libnvinfer_plugins(trt_logger, '')
@@ -72,14 +101,27 @@ def build_engine(
     config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
     if not tf32:
         config.clear_flag(trt.BuilderFlag.TF32)
+    config.hardware_compatibility_level = getattr(
+        trt.HardwareCompatibilityLevel, HARDWARE_COMPAT[hardware_compat]
+    )
     cache = None
     if timing_cache is not None:
         data = Path(timing_cache).read_bytes() if Path(timing_cache).exists() else b''
         cache = config.create_timing_cache(data)
         config.set_timing_cache(cache, ignore_mismatch=False)
 
-    logger.info('Building TensorRT engine from %s ...', onnx_file)
-    serialized = builder.build_serialized_network(network, config)
+    logger.info(
+        'Building TensorRT engine from %s (hardware compatibility %s) ...',
+        onnx_file,
+        hardware_compat,
+    )
+    ptx_arch = nullcontext()
+    if plugins == 'aot' and hardware_compat == 'ampere+':
+        from .plugins.msda import plugin_ptx_arch
+
+        ptx_arch = plugin_ptx_arch(AMPERE_PLUS_ARCH)
+    with ptx_arch:
+        serialized = builder.build_serialized_network(network, config)
     if serialized is None:
         raise RuntimeError(f'TensorRT failed to build an engine from {onnx_file}')
     Path(engine_file).write_bytes(bytes(serialized))

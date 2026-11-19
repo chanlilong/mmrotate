@@ -21,6 +21,8 @@ Both read value / offsets / logits in the dtype of the graph (fp16, bf16 or
 fp32) and compute in fp32, as the training kernel does.
 """
 
+import ctypes
+import functools
 import logging
 import re
 from collections.abc import Iterator
@@ -39,6 +41,12 @@ PLUGIN_MODES = ('aot', 'jit')
 _DEFAULT_TUNING = (2, 1)
 # (H, C, L, P, LR, value dtype name) -> (BLOCK_N, num_warps), filled while tracing.
 _TUNED: dict[tuple, tuple[int, int]] = {}
+# Compute capability (e.g. 80) the ahead-of-time kernel is compiled for; None: the current GPU.
+_PTX_ARCH: int | None = None
+# Highest PTX ISA version (x10) put in an engine: what a CUDA 13.0 driver JIT-compiles, the
+# oldest driver TensorRT for CUDA 13 runs on. Triton otherwise uses its ptxas's version (9.3
+# for Blackwell with Triton 3.8), which older drivers reject when TensorRT loads the kernel.
+PTX_VERSION_CAP = 90
 
 
 @contextmanager
@@ -147,6 +155,51 @@ def export_msda_as_plugin() -> Iterator[None]:
         ms_deform_attn.FusedMSDAFunction = original
 
 
+@contextmanager
+def plugin_ptx_arch(arch: int | None) -> Iterator[None]:
+    """Compile the ahead-of-time plugin kernel for compute capability ``arch``.
+
+    By default Triton compiles for the GPU it runs on, and for sm_90 and newer
+    it targets the architecture-specific ISA (``sm_120a``), whose PTX the
+    driver cannot JIT for any other GPU. ``plugin_ptx_arch(80)`` gives
+    ``.target sm_80`` PTX, which the driver JIT-compiles on every Ampere or
+    newer GPU (used for ``--hardware-compat ampere+`` engines).
+    """
+    global _PTX_ARCH
+    previous, _PTX_ARCH = _PTX_ARCH, arch
+    try:
+        yield
+    finally:
+        _PTX_ARCH = previous
+
+
+def ptx_target(ptx: str) -> str:
+    """The ``.target`` of a PTX module, e.g. ``'sm_80'`` or ``'sm_120a'``."""
+    match = re.search(r'^\s*\.target\s+(\w+)', ptx, re.M)
+    if match is None:
+        raise ValueError('No .target directive in the PTX')
+    return match.group(1)
+
+
+@functools.cache
+def driver_ptx_version() -> int:
+    """Highest PTX ISA version (x10, e.g. 90) the installed CUDA driver JIT-compiles."""
+    from triton.backends.nvidia.compiler import ptx_get_version
+
+    version = ctypes.c_int()
+    if ctypes.CDLL('libcuda.so.1').cuDriverGetVersion(ctypes.byref(version)) != 0:
+        raise RuntimeError('cuDriverGetVersion failed')
+    return ptx_get_version(f'{version.value // 1000}.{version.value % 1000 // 10}')
+
+
+def ptx_version(ptx: str) -> str:
+    """The ``.version`` of a PTX module, e.g. ``'9.0'``."""
+    match = re.search(r'^\s*\.version\s+([\d.]+)', ptx, re.M)
+    if match is None:
+        raise ValueError('No .version directive in the PTX')
+    return match.group(1)
+
+
 def strip_hidden_params(ptx: str, kernel_name: str, num_params: int) -> str:
     """Drop the trailing kernel parameters Triton adds to every kernel.
 
@@ -194,6 +247,7 @@ def compile_msda_kernel(
     LR: int,
     block_n: int,
     num_warps: int,
+    arch: int | None = None,
 ) -> tuple[str, str, int]:
     """Compile the forward kernel to PTX for TensorRT.
 
@@ -207,17 +261,24 @@ def compile_msda_kernel(
         LR: Levels of the reference points (1 or ``L``).
         block_n: Queries per program.
         num_warps: Warps per program.
+        arch: Compute capability to compile for (e.g. ``80``); defaults to
+            the one set by :func:`plugin_ptx_arch`, else the current GPU.
 
     Returns:
         The kernel name, its PTX (hidden parameters stripped) and the shared
         memory it needs in bytes.
     """
     import triton
+    from triton.backends.compiler import GPUTarget
     from triton.compiler.compiler import make_backend
     from triton.runtime import driver
 
     from .msda_kernel import msda_fused_fwd_trt_kernel
 
+    arch = arch if arch is not None else _PTX_ARCH
+    target = driver.active.get_current_target()
+    if arch is not None:
+        target = GPUTarget(target.backend, arch, target.warp_size)
     signature = {
         'value_ptr': f'*{dtypes["value"]}',
         'shapes_ptr': f'*{dtypes["shapes"]}',
@@ -234,7 +295,7 @@ def compile_msda_kernel(
     # compiler vectorise the value gathers (~10x faster kernel). An ahead-of-time
     # compile has no tensors to look at, so the alignment is declared here;
     # TensorRT and torch both allocate tensors with a larger alignment.
-    backend = make_backend(driver.active.get_current_target())
+    backend = make_backend(target)
     aligned = backend.parse_attr('D')
     attrs = {(i,): aligned for i, ty in enumerate(signature.values()) if ty.startswith('*')}
     src = triton.compiler.ASTSource(
@@ -248,11 +309,21 @@ def compile_msda_kernel(
         ),
         attrs=attrs,
     )  # fmt: skip
-    compiled = triton.compile(src, options={'num_warps': num_warps})
+    # The PTX is JIT-compiled by the driver where the engine runs, so its ISA version is capped
+    # (the kernel uses nothing newer); never above what the ptxas Triton uses for ``arch`` reads.
+    from triton.backends.nvidia.compiler import get_ptxas, ptx_get_version
+
+    version = min(
+        PTX_VERSION_CAP, driver_ptx_version(), ptx_get_version(get_ptxas(target.arch).version)
+    )
+    options = {'num_warps': num_warps, 'ptx_version': version}
+    compiled = triton.compile(src, target=target, options=options)
     meta = compiled.metadata
     if meta.global_scratch_size or meta.profile_scratch_size:
         raise RuntimeError('The MSDA kernel needs Triton scratch memory, which TensorRT lacks')
     ptx = strip_hidden_params(compiled.asm['ptx'], meta.name, len(signature))
+    if arch is not None and ptx_target(ptx) != f'sm_{arch}':
+        raise RuntimeError(f'Triton compiled the kernel for {ptx_target(ptx)}, not sm_{arch}')
     return meta.name, ptx, int(meta.shared)
 
 
