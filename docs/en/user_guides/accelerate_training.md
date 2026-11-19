@@ -21,8 +21,8 @@ Contents: [Requirements](#requirements) · [Quick start](#quick-start) ·
 
 ## Requirements
 
-Use the dev image `voltronix-mmrotate-dev:2026.11.05` (built from
-`mmrotate_build/docker/dockerfile-redhat`). It contains:
+Use the dev image `voltronix-mmrotate-dev:2026.11.05` or later (built from
+`docker/Dockerfile`, see `docker/README.md`). It contains:
 
 | package     | version          | needed for |
 | ----------- | ---------------- | ---------- |
@@ -453,9 +453,8 @@ docs/en/user_guides/accelerate_training.md
 
 No upstream file is edited. The registration happens through
 `custom_imports: [mmrotate.accelerate]`, and `tools/accelerate/*.py` imports the
-package directly. The only change outside this repo is in `mmrotate_build`: one
-new Dockerfile step (DeepSpeed + torchao) plus its checks in the verification
-step.
+package directly. The image needs one Dockerfile step (DeepSpeed + torchao) plus
+its checks in the verification step; both are in `docker/Dockerfile`.
 
 The other fork already has its own `mmrotate/accelerate/` (`accelerate_loop.py`,
 `accelerate_optim_wrapper.py`, `accelerate_runner.py`,

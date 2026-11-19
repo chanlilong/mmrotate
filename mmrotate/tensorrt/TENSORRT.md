@@ -17,11 +17,11 @@ ops and dynamic proposal counts have no static-shape TensorRT export.
 
 Requirements: `tensorrt` (tested with `tensorrt-cu13==11.4.0.106`), `onnx` (fused attention
 export) and, for INT8 / FP8, `nvidia-modelopt` (0.47.0, without the `[onnx]` extra). They are in
-`voltronix-mmrotate-dev:2026.10.29` (see `mmrotate_build/docker/dockerfile-redhat`) and in the image
-of `docker/Dockerfile.trt`, which adds them to the dev image of `docker/Dockerfile`:
+the dev image `voltronix-mmrotate-dev` (2026.10.29 and later), built from `docker/Dockerfile`
+(see `docker/README.md`):
 
 ```bash
-docker build -f docker/Dockerfile.trt --build-arg BASE=mmrotate-dev -t mmrotate-trt docker
+docker buildx build --load -f docker/Dockerfile -t voltronix-mmrotate-dev docker
 ```
 
 Fused attention needs TensorRT >= 11.3 (10.x: use `--attention legacy`), the deformable-attention

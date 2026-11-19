@@ -1,15 +1,16 @@
-# MMRotate dev container for an x86_64 NVIDIA host (driver >= 580).
+# voltronix-mmrotate-dev container for an x86_64 NVIDIA host (driver >= 580).
 #   docker compose -f docker/docker-compose.yaml build
 #   docker compose -f docker/docker-compose.yaml run --rm mmrotate-dev
-# Override the data mount with DATA_ROOT=/path/to/data.
+# Override the image tag with IMAGE=..., and the data mount with DATA_ROOT=/path/to/data.
 services:
   mmrotate-dev:
-    image: mmrotate-dev:latest
-    platform: linux/amd64
+    image: ${IMAGE:-artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.19}
     build:
-      context: ..
-      dockerfile: docker/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     working_dir: /mmrotate
+    environment:
+      - PYTHONPATH=/mmrotate
     volumes:
       - ..:/mmrotate
       - ${DATA_ROOT:-/mnt}:/mnt
