@@ -54,6 +54,12 @@ def check_similarity_health(h: dict) -> None:
         assert isinstance(h[key], int) and h[key] > 0, key
     assert h['native_size'] % h['out_stride'] == 0
     assert h['model_version'] and h['feature_space'] and len(h['feature_space']) <= 200
+    # qgis_annotations core.services.similarity.advertised_gsd: absent or a positive number;
+    # the server resamples to it, so the service itself must not resample again
+    gsd = h.get('gsd_m')
+    assert gsd is None or (isinstance(gsd, int | float) and 0 < gsd < math.inf), gsd
+    if gsd is not None:
+        assert h.get('scale', 1.0) == 1.0
 
 
 def decode_grid(resp: dict) -> np.ndarray:

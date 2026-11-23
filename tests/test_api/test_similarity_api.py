@@ -20,7 +20,7 @@ from api_test_utils import (
 )
 from fastapi.testclient import TestClient
 
-from api.app import create_app
+from api.app import build_services, create_app
 from api.codec import encode_png
 from api.features import FeatureSpec, Projector
 from api.model import LoadedModel
@@ -71,16 +71,32 @@ def test_embed_errors(tiny_client: TestClient) -> None:
     assert r.status_code == 422
 
 
-def test_scale_from_gsd(tiny_lm: LoadedModel) -> None:
-    """Imagery at 0.8 m, model at 0.5 m: tiles are enlarged 1.6x inside the service."""
-    svc = SimilarityService(tiny_lm, gsd_m=0.5, imagery_gsd_m=0.8)
-    assert svc.out_stride_src == 5 and svc.scale == pytest.approx(1.6)
-    assert svc.tile_size == 640  # 1024 model px / 1.6, a multiple of 5
+def test_gsd_is_advertised_not_applied(tiny_lm: LoadedModel) -> None:
+    """``gsd_m`` is reported for the qgis server to resample to; the service never rescales."""
+    plain = SimilarityService(tiny_lm)
+    svc = SimilarityService(tiny_lm, gsd_m=0.5)
+    h = svc.health().model_dump(exclude_none=True)
+    check_similarity_health(h)
+    assert h['gsd_m'] == 0.5 and h['scale'] == 1.0
+    assert h['out_stride'] == 8 and h['native_size'] == 1024
+    # qgis names the space +gsd<g> itself, so the service's own name is GSD-free
+    assert svc.feature_space == plain.feature_space and 'gsd' not in svc.feature_space
+    assert 'gsd_m' not in plain.health().model_dump(exclude_none=True)
     out = svc.embed(random_tile(640, 333))
-    assert (out.height, out.width) == expected_cells(640, 333, 5)
-    assert 'x1.6' in svc.feature_space
-    coarse = SimilarityService(tiny_lm, gsd_m=0.5, imagery_gsd_m=0.25)
-    assert coarse.out_stride_src == 16 and coarse.scale == 0.5 and coarse.tile_size == 2048
+    assert (out.height, out.width) == expected_cells(640, 333, 8)
+
+
+def test_similarity_gsd_setting(tiny_lm: LoadedModel) -> None:
+    """``--similarity-gsd``: default ``--gsd``, a number overrides, ``none`` = native pixels;
+    the detector keeps ``--gsd`` either way."""
+    for sim_gsd, want in ((None, 0.5), (0.3, 0.3), ('none', None)):
+        settings = _settings(tiny_lm, gsd_m=0.5, similarity_gsd_m=sim_gsd)
+        det, sim = build_services(settings, tiny_lm)
+        assert det is not None and sim is not None
+        assert det.health().gsd_m == 0.5
+        h = sim.health().model_dump(exclude_none=True)
+        check_similarity_health(h)
+        assert h.get('gsd_m') == want, sim_gsd
 
 
 def test_large_tile_is_stitched(tiny_lm: LoadedModel) -> None:

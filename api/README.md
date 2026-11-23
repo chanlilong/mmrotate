@@ -51,19 +51,25 @@ service) before listening. A config and checkpoint that don't fit therefore fail
 
 ## GSD: feeding the model the scale it was trained at
 
-`--gsd` is the metres per pixel the model was **trained** at.
+`--gsd` is the metres per pixel the model was **trained** at. Both services report a GSD as
+`gsd_m` in `/health`, and the qgis server resamples the imagery to it. The service itself never
+resamples a tile.
 
 - **Detector.** `/health` reports it as `gsd_m`. The qgis server then **resamples the
   imagery to that GSD before tiling** (when *Always run at this service's trained GSD* is
   ticked, the default). The service receives tiles already at the right scale and never
   rescales them.
-- **Similarity.** The similarity contract carries no GSD: tiles arrive in the imagery's own
-  source pixels.
-  - Set `--imagery-gsd` to the campaign imagery's GSD. The service then resamples every tile
-    by `scale = imagery_gsd / gsd` inside, exactly like the C-RADIO reference.
-  - The scale is snapped so that `out_stride` is a whole number of source pixels; the snapped
-    value is logged and reported in `/health`.
-  - Without `--imagery-gsd` the scale is 1.
+- **Similarity.** `/health` reports `gsd_m` as well: `--gsd` by default, or another value from
+  `--similarity-gsd` (`MMROTATE_API_SIMILARITY_GSD`). `--similarity-gsd none` leaves `gsd_m` out,
+  so tiles arrive as the imagery's own source pixels. `scale` is always 1.
+  - A qgis_annotations server from `66f3067` onwards (*Ground sample distance* in
+    `docs/SIMILARITY_API.md`) resamples every image to `gsd_m` before `/embed`. Each output cell
+    covers a whole number of source pixels, so the grid stays on the image's own pixels.
+  - The server also names the feature space `<feature_space>+gsd<gsd_m>`, so this service leaves the
+    GSD out of its own `feature_space`. Setting, changing or removing the GSD therefore starts a
+    new feature space, and annotators' trained classes move over the way §6 of that doc describes.
+  - An image of unknown GSD (a pixel project with no nominal GSD) is sent at its own pixels,
+    and the run log says so.
 
 ## Image size: options, auto-detected, validated
 
@@ -75,7 +81,7 @@ Nothing assumes SODA-A's 800 px.
 | `--resize-mode` | `none` | `none` feeds tiles at their own pixels: the config's `Resize`/`Pad` are dropped, because a keep-ratio `Resize` would silently enlarge a short tile and change its GSD. `config` keeps them, for models trained on resized whole images. |
 | `--pad-mode` | `square` | `square` zero-pads every window to the input size, which is the context the model trained on and is required by fixed-shape ViTs. `divisor` pads only to `pad_size_divisor`, which is faster on short tiles. |
 | `--detector-tile-size` | input size | `native_size` in the detector's `/health`, i.e. the tile the client sends. A larger tile is cut into overlapping windows of the input size (`--patch-overlap`, 128 px); their boxes are merged with the model's own rotated NMS at the request's `nms_iou`. This cuts HTTP round trips on big GPUs. |
-| `--similarity-tile-size` | input size / scale | `native_size` of the similarity service (source px, snapped to `out_stride`). Larger tiles run as windows whose core cells are stitched on the stride grid. |
+| `--similarity-tile-size` | input size | `native_size` of the similarity service (px at `gsd_m`, snapped to `out_stride`). Larger tiles run as windows whose core cells are stitched on the stride grid. |
 | `--max-batch`, `--max-side-px` | 8, 2 × tile | Tiles per `/detect` request; the largest tile side accepted. |
 | `--precision` | `fp32` | `fp16` / `bf16` autocast. |
 
@@ -318,8 +324,9 @@ ruff check tests/test_api --config tests/test_api/ruff.toml
 
 - **Single-stage detectors only for the head sources.** Two-stage models should still serve
   `/detect` and the backbone and neck sources, but that is untested.
-- **No GSD on the similarity wire.** `--imagery-gsd` is one value per service. Imagery at
-  very different GSDs needs one instance per GSD, or a contract change in qgis_annotations.
+- **Older qgis servers ignore the similarity `gsd_m`.** Before qgis_annotations `66f3067`, the
+  server sends similarity tiles as source pixels whatever `/health` reports, so the model sees
+  them at the imagery's own GSD.
 - **Context dependence.** ViT backbones attend globally, so a cell's vector depends on the
   whole window. For the SODA ViTDet model, an aligned 480 × 400 crop agrees with the same
   cells of the full 800 px patch at a median cosine of 0.89 with the default features (0.86

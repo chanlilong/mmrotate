@@ -52,7 +52,7 @@ services:
       MMROTATE_API_WEIGHTS: /model/weights.pth
       MMROTATE_API_GSD: ${GSD_M:-0.5}              # metres/pixel the model was trained at
       MMROTATE_API_MODEL_NAME: ${MODEL_NAME:-mmrotate}
-      # MMROTATE_API_IMAGERY_GSD: "0.5"             # similarity: GSD of the campaign imagery
+      # MMROTATE_API_SIMILARITY_GSD: "none"         # similarity gsd_m: default the GSD above; a number, or none = native px
       # MMROTATE_API_SIMILARITY_PROFILE: /model/similarity_profile.npz
       # MMROTATE_API_INPUT_SIZE: "1024"             # default: from the config's test pipeline
       # MMROTATE_API_DETECTOR_TILE_SIZE: "2048"     # bigger tiles run as windows inside

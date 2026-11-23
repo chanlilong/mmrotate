@@ -139,10 +139,26 @@ def test_settings_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.sim.as_dict() == {'levels': [0, 2]}
 
 
+def test_similarity_gsd_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    base = ['--config', 'c.yaml', '--weights', 'w.pth', '--gsd', '0.5']
+    s = settings_from_args(base)
+    assert s.similarity_gsd_m is None and s.similarity_gsd() == 0.5  # follows --gsd
+    s = settings_from_args([*base, '--similarity-gsd', 'None'])
+    assert s.similarity_gsd_m == 'none' and s.similarity_gsd() is None  # native pixels
+    monkeypatch.setenv('MMROTATE_API_SIMILARITY_GSD', '0.3')
+    s = settings_from_args(base)
+    assert s.similarity_gsd() == 0.3 and s.gsd_m == 0.5  # the detector keeps --gsd
+    with pytest.raises(ValueError):
+        settings_from_args([*base, '--similarity-gsd', 'abc'])
+    assert Settings(config='c', weights='w', similarity_gsd_m=0.3).similarity_gsd() == 0.3
+
+
 def test_settings_validation() -> None:
     with pytest.raises(ValueError):
         Settings(config='c', weights='w', services=('nope',))
     with pytest.raises(ValueError):
-        Settings(config='c', weights='w', imagery_gsd_m=1.0)  # needs --gsd
+        Settings(config='c', weights='w', similarity_gsd_m=-1.0)
+    with pytest.raises(ValueError):
+        Settings(config='c', weights='w', gsd_m=0.0)
     with pytest.raises(ValueError):
         Settings(config='c', weights='w', pad_mode='odd')

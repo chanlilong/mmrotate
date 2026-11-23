@@ -8,12 +8,34 @@ A flag on the command line wins over the environment.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Literal
 
 ENV_PREFIX = 'MMROTATE_API_'
 SERVICES = ('detector', 'similarity')
+NATIVE = 'none'  # --similarity-gsd none: no gsd_m, tiles at source pixels
+
+
+def parse_gsd(value: object) -> float | Literal['none'] | None:
+    """``--similarity-gsd``: empty -> follow ``--gsd``; ``none``/``native`` -> native px."""
+    if value is None:
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in (NATIVE, 'native'):
+        return NATIVE
+    try:
+        return float(text)
+    except ValueError:
+        raise ValueError(
+            f'--similarity-gsd {text!r}: use metres per pixel, or none for native pixels'
+        ) from None
 
 
 def parse_size(value: str | int | Sequence[int] | None) -> tuple[int, int] | None:
@@ -72,7 +94,7 @@ class Settings:
     config: str
     weights: str
     gsd_m: float | None = None
-    imagery_gsd_m: float | None = None
+    similarity_gsd_m: float | Literal['none'] | None = None
     services: tuple[str, ...] = SERVICES
     device: str = 'cuda:0'
     precision: str = 'fp32'
@@ -111,12 +133,23 @@ class Settings:
             raise ValueError('--patch-overlap must be >= 0')
         if self.max_batch < 1:
             raise ValueError('--max-batch must be >= 1')
-        for name in ('gsd_m', 'imagery_gsd_m'):
-            value = getattr(self, name)
-            if value is not None and value <= 0:
-                raise ValueError(f'--{name.replace("_", "-")} must be > 0')
-        if self.imagery_gsd_m is not None and self.gsd_m is None:
-            raise ValueError('--imagery-gsd needs --gsd (the GSD the model was trained at)')
+        if self.gsd_m is not None and not 0 < self.gsd_m < math.inf:
+            raise ValueError('--gsd must be > 0')
+        sim = self.similarity_gsd_m
+        if sim is not None and sim != NATIVE:
+            if isinstance(sim, str) or not 0 < sim < math.inf:
+                raise ValueError(f'--similarity-gsd must be > 0 or {NATIVE!r}, got {sim!r}')
+
+    def similarity_gsd(self) -> float | None:
+        """The GSD the similarity ``/health`` reports as ``gsd_m`` (``None``: native pixels).
+
+        The qgis_annotations server resamples every image to it before ``/embed``.
+        """
+        if self.similarity_gsd_m == NATIVE:
+            return None
+        if self.similarity_gsd_m is not None:
+            return float(self.similarity_gsd_m)
+        return self.gsd_m
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -137,7 +170,8 @@ def build_parser() -> argparse.ArgumentParser:
         '--gsd',
         type=float,
         default=env('gsd'),
-        help='metres per pixel the model was trained at (reported as gsd_m)',
+        help='metres per pixel the model was trained at; both services report it as gsd_m '
+        'and the qgis server resamples the imagery to it',
     )
     g.add_argument('--model-name', default=env('model_name'), help='name shown to annotators')
     g.add_argument('--device', default=env('device', 'cuda:0'))
@@ -201,10 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group('similarity')
     g.add_argument(
-        '--imagery-gsd',
-        type=float,
-        default=env('imagery_gsd'),
-        help='GSD of the campaign imagery; tiles are resampled by imagery_gsd / gsd',
+        '--similarity-gsd',
+        default=env('similarity_gsd'),
+        help='GSD the similarity /health reports as gsd_m (the qgis server resamples tiles to '
+        f'it). Default: --gsd; {NATIVE!r} = native pixels',
     )
     g.add_argument(
         '--similarity-profile',
@@ -258,7 +292,7 @@ def settings_from_args(argv: Sequence[str] | None = None) -> Settings:
         config=a.config,
         weights=a.weights,
         gsd_m=opt_float(a.gsd),
-        imagery_gsd_m=opt_float(a.imagery_gsd),
+        similarity_gsd_m=parse_gsd(a.similarity_gsd),
         services=tuple(s.strip() for s in str(a.services).split(',') if s.strip()),
         device=a.device,
         precision=a.precision,

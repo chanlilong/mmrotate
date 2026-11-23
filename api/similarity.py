@@ -9,7 +9,6 @@ import logging
 import math
 from collections.abc import Callable
 
-import cv2
 import numpy as np
 import torch
 from fastapi import APIRouter, HTTPException
@@ -47,14 +46,17 @@ class SimilarityHealth(BaseModel):
     feature_dim: int
     model_version: str
     feature_space: str
-    scale: float = Field(1.0, description='source -> model resampling done inside the service')
+    scale: float = Field(1.0, description='always 1: the service never resamples inside')
     patch_size: int | None = None
     model_name: str
     dtype: str = 'int8'
     precision: str
     device: str
-    gsd_m: float | None = Field(None, description='informational: the model training GSD')
-    imagery_gsd_m: float | None = Field(None, description='the imagery GSD `scale` assumes')
+    gsd_m: float | None = Field(
+        None,
+        description='m/px the qgis server resamples every image to before /embed (it adds '
+        '+gsd<g> to the feature space); absent: tiles are source pixels',
+    )
     input_size: list[int]
     pad_mode: str
     patch_overlap: int
@@ -62,7 +64,12 @@ class SimilarityHealth(BaseModel):
 
 
 class EmbedRequest(BaseModel):
-    image: str = Field(description='base64 PNG, RGB, source pixels, at most native_size a side')
+    image: str = Field(
+        description=(
+            'base64 PNG, RGB, at most native_size a side: source pixels, or '
+            'resampled to gsd_m by the server when /health reports one'
+        )
+    )
 
 
 class EmbedResponse(BaseModel):
@@ -77,7 +84,12 @@ class EmbedResponse(BaseModel):
 
 # --------------------------------------------------------------------------- service
 class SimilarityService:
-    """Embeds one source-pixel tile into a grid of unit vectors at ``out_stride``."""
+    """Embeds one tile into a grid of unit vectors at ``out_stride``.
+
+    ``gsd_m`` is only advertised: the qgis_annotations server resamples every image to it
+    before ``/embed``, so a tile arrives at the scale the model wants and is never resampled
+    here (``scale`` is always 1).
+    """
 
     def __init__(
         self,
@@ -86,7 +98,6 @@ class SimilarityService:
         projector: Projector | None = None,
         *,
         gsd_m: float | None = None,
-        imagery_gsd_m: float | None = None,
         tile_size: int | None = None,
         patch_overlap: int = 128,
         max_batch: int = 8,
@@ -100,7 +111,6 @@ class SimilarityService:
         self.max_batch = max_batch
         self.extractor = FeatureExtractor(lm.model)
         self.gsd_m = gsd_m
-        self.imagery_gsd_m = imagery_gsd_m
         s = self.spec.out_stride
         if self.spec.projection != 'none' and projector is None:
             raise ValueError(
@@ -115,28 +125,15 @@ class SimilarityService:
         for side, what in ((lm.input_w, 'input width'), (lm.input_h, 'input height')):
             tiling.check_divisible(side, s, what, f'similarity out_stride {s}; set --input-size')
 
-        # source px -> model px: imagery at 1.0 m, model at 0.5 m => enlarge 2x
-        raw = (imagery_gsd_m / gsd_m) if (imagery_gsd_m and gsd_m) else 1.0
-        self.out_stride_src = max(1, round(s / raw))
-        self.scale = s / self.out_stride_src
-        if abs(self.scale - raw) > 1e-6:
-            log.info(
-                'similarity scale %.4g snapped to %.4g so out_stride is %d source px',
-                raw,
-                self.scale,
-                self.out_stride_src,
-            )
-        default_tile = int(min(lm.input_size) / self.scale)
-        tile = int(tile_size or default_tile)
-        snapped = tiling.snap_down(tile, self.out_stride_src)
+        tile = int(tile_size or min(lm.input_size))
+        snapped = tiling.snap_down(tile, s)
         if snapped != tile:
             log.info('similarity tile size %d snapped to %d (out_stride)', tile, snapped)
         self.tile_size = snapped
         overlap = int(round(patch_overlap / s)) * s
         self.patch_overlap = overlap
-        model_tile = math.ceil(self.tile_size / self.out_stride_src) * s
-        if model_tile > min(lm.input_size):
-            tiling.window_starts(model_tile, min(lm.input_size), overlap, s)
+        if self.tile_size > min(lm.input_size):
+            tiling.window_starts(self.tile_size, min(lm.input_size), overlap, s)
         if profile_meta:
             for key, mine in (('input_size', list(lm.input_size)), ('pad_mode', lm.pad_mode)):
                 theirs = profile_meta.get(key)
@@ -150,16 +147,14 @@ class SimilarityService:
                     )
         self.feature_dim = self._probe_dim()
         extra = {'input': list(lm.input_size), 'pad': lm.pad_mode}
-        if model_tile > min(lm.input_size):
+        if self.tile_size > min(lm.input_size):
             extra['overlap'] = overlap
         digest = spec_digest(self.spec, projector, extra)
         name = lm.model_name[:60]
         space = (
             f'{name}+w{lm.weights_digest}+{self.spec.tag()}+f{digest}'
-            f'-m{lm.input_w}x{lm.input_h}s{self.out_stride_src}d{self.feature_dim}'
+            f'-m{lm.input_w}x{lm.input_h}s{s}d{self.feature_dim}'
         )
-        if self.scale != 1:
-            space += f'-x{self.scale:.3g}'
         if self.spec.dtype == 'int8':
             space += '-int8'
         self.feature_space = feature_space or space[:200]
@@ -181,26 +176,10 @@ class SimilarityService:
         probe = np.full((s * 4, s * 4, 3), 114, np.uint8)
         return int(self._forward([probe]).shape[-1])
 
-    def to_model_px(self, tile: np.ndarray) -> np.ndarray:
-        """Resample a source tile by ``scale`` onto whole output cells (model px)."""
-        if self.scale == 1:
-            return tile
-        s_src, s = self.out_stride_src, self.spec.out_stride
-        h, w = tile.shape[:2]
-        ch, cw = math.ceil(h / s_src), math.ceil(w / s_src)
-        padded = cv2.copyMakeBorder(
-            tile, 0, ch * s_src - h, 0, cw * s_src - w, cv2.BORDER_REPLICATE
-        )
-        interp = cv2.INTER_CUBIC if self.scale > 1 else cv2.INTER_AREA
-        return cv2.resize(padded, (cw * s, ch * s), interpolation=interp)
-
     def embed_unit(self, tile: np.ndarray) -> np.ndarray:
-        """BGR uint8 source tile -> ``[ceil(h/s), ceil(w/s), D]`` float32 unit vectors."""
-        h, w = tile.shape[:2]
+        """BGR uint8 tile -> ``[ceil(h/s), ceil(w/s), D]`` float32 unit vectors."""
+        H, W = tile.shape[:2]
         s = self.spec.out_stride
-        ch, cw = math.ceil(h / self.out_stride_src), math.ceil(w / self.out_stride_src)
-        img = self.to_model_px(tile)
-        H, W = img.shape[:2]
         win_h, win_w = self.lm.input_h, self.lm.input_w
         ys = tiling.window_starts(H, win_h, self.patch_overlap, s)
         xs = tiling.window_starts(W, win_w, self.patch_overlap, s)
@@ -210,7 +189,7 @@ class SimilarityService:
         grid = np.zeros((math.ceil(H / s), math.ceil(W / s), self.feature_dim), np.float32)
         for start in range(0, len(jobs), self.max_batch):
             chunk = jobs[start : start + self.max_batch]
-            crops = [img[ys[iy] : ys[iy] + win_h, xs[ix] : xs[ix] + win_w] for iy, ix in chunk]
+            crops = [tile[ys[iy] : ys[iy] + win_h, xs[ix] : xs[ix] + win_w] for iy, ix in chunk]
             feats = self._forward(crops).cpu().numpy()
             for (iy, ix), f in zip(chunk, feats, strict=True):
                 (ylo, yhi), (xlo, xhi) = y_core[iy], x_core[ix]
@@ -218,7 +197,7 @@ class SimilarityService:
                 cx0, cx1 = xlo // s, math.ceil(xhi / s)
                 oy, ox = ys[iy] // s, xs[ix] // s
                 grid[cy0:cy1, cx0:cx1] = f[cy0 - oy : cy1 - oy, cx0 - ox : cx1 - ox]
-        return grid[:ch, :cw]
+        return grid
 
     def embed(self, tile: np.ndarray) -> EmbedResponse:
         h, w = tile.shape[:2]
@@ -230,7 +209,7 @@ class SimilarityService:
             height=arr.shape[0],
             width=arr.shape[1],
             dim=arr.shape[2],
-            stride=self.out_stride_src,
+            stride=self.spec.out_stride,
             dtype=self.spec.dtype,
             scale=qscale,
             data=base64.b64encode(np.ascontiguousarray(arr).tobytes()).decode(),
@@ -249,18 +228,16 @@ class SimilarityService:
             }
         return SimilarityHealth(
             native_size=self.tile_size,
-            out_stride=self.out_stride_src,
+            out_stride=self.spec.out_stride,
             feature_dim=self.feature_dim,
             model_version=self.model_version,
             feature_space=self.feature_space,
-            scale=self.scale,
             patch_size=self.spec.out_stride,
             model_name=lm.model_name,
             dtype=self.spec.dtype,
             precision=lm.precision,
             device=lm.device,
             gsd_m=self.gsd_m,
-            imagery_gsd_m=self.imagery_gsd_m,
             input_size=list(lm.input_size),
             pad_mode=lm.pad_mode,
             patch_overlap=self.patch_overlap,
@@ -270,11 +247,11 @@ class SimilarityService:
     def self_test(self) -> None:
         """A random full tile and a short one: grid shape, unit norms, no zero vectors."""
         rng = np.random.default_rng(0)
-        n = self.tile_size
+        n, s = self.tile_size, self.spec.out_stride
         for h, w in ((n, n), (max(1, n // 3) + 5, n)):
             tile = rng.integers(0, 255, (h, w, 3), dtype=np.uint8)
             out = self.embed(tile)
-            want = (math.ceil(h / self.out_stride_src), math.ceil(w / self.out_stride_src))
+            want = (math.ceil(h / s), math.ceil(w / s))
             if (out.height, out.width) != want or out.dim != self.feature_dim:
                 raise RuntimeError(
                     f'similarity self-test: grid {out.height}x{out.width}x{out.dim} for a '
@@ -288,11 +265,14 @@ class SimilarityService:
                     f'similarity self-test: vector norms {norms.min():.3f}..{norms.max():.3f}'
                 )
         log.info(
-            'similarity self-test passed (tile %d, stride %d, dim %d, space %s)',
+            'similarity self-test passed (tile %d, stride %d, dim %d, space %s, %s)',
             self.tile_size,
-            self.out_stride_src,
+            s,
             self.feature_dim,
             self.feature_space,
+            f'gsd_m {self.gsd_m:g}: the server resamples to it'
+            if self.gsd_m
+            else 'no gsd_m: tiles at source pixels',
         )
 
 
@@ -312,7 +292,7 @@ def make_router(get_service: Callable[[], SimilarityService]) -> APIRouter:
     @router.post(
         '/embed',
         response_model=EmbedResponse,
-        summary='Grid of unit feature vectors for one source-pixel tile',
+        summary='Grid of unit feature vectors for one tile (at gsd_m when /health has one)',
         responses={400: {'description': 'bad PNG or tile larger than native_size'}},
     )
     def embed(req: EmbedRequest) -> EmbedResponse:
