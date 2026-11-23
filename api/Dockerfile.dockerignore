@@ -1,0 +1,13 @@
+# Build context for api/Dockerfile (BuildKit reads <Dockerfile>.dockerignore): the code only.
+.git
+**/__pycache__
+**/*.pyc
+work_dirs
+data
+demo/*.jpg
+resources
+docs
+*.pth
+*.engine
+*.onnx
+*.tar.gz
