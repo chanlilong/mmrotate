@@ -14,6 +14,7 @@ describes the topology.
 
 Contents: [Requirements](#requirements) · [Quick start](#quick-start) ·
 [The `accelerator:` block](#the-accelerator-block) · [What can be combined](#what-can-be-combined) ·
+[DeepSpeed ZeRO: when to use it](#deepspeed-zero-when-to-use-it) ·
 [How it works](#how-it-works) · [Checkpoints and resuming](#checkpoints-and-resuming) ·
 [Validation and test across ranks](#validation-and-test-across-ranks) ·
 [GPU memory](#gpu-memory) · [Troubleshooting](#troubleshooting) · [Verified runs](#verified-runs) ·
@@ -180,12 +181,8 @@ all-reduce while another waits in a ZeRO-3 gather. Both then block until the
 NCCL timeout (seen on 2 GPUs with SODA-A after about 45 iterations). Per-GPU BN
 avoids this; with `batch_size` 8 per GPU the statistics are still reliable.
 
-Which recipe to choose for these detectors: the ViT trunk is frozen, and the
-trainable part (adapter, neck, head, LoRA) is small. So DDP + bf16 is the
-fastest choice. ZeRO-2 saves the optimizer and gradient memory of the trainable
-part. ZeRO-3 also shards the weights, but has to gather every sub-module on
-each pass, which makes it several times slower. Use it only when the trainable
-model does not fit on one GPU.
+Which recipe to choose: see [DeepSpeed ZeRO: when to use it](#deepspeed-zero-when-to-use-it).
+In short, DDP + bf16 for every detector in this repo.
 
 fp8 converts only `nn.Linear` layers whose dimensions are divisible by 16. In
 the LoRA configs the ViT blocks are `LoRALinear`, so they stay bf16, and fp8
@@ -193,6 +190,151 @@ covers only the CoMer adapter and deformable-attention linears. torchao fp8 is
 fastest under `torch.compile`; measure before using it. The log line
 `accelerate prepared ... N nn.Linear -> Float8Linear` shows how many layers were
 converted.
+
+## DeepSpeed ZeRO: when to use it
+
+**Short answer: for the detectors in this repo (frozen or LoRA ViT trunk), use
+DDP + bf16, not ZeRO.** ZeRO shrinks the memory of the *trainable parameters*
+and their optimizer state. These detectors run out of memory because of
+*activations* and the label assigner, which ZeRO does not touch. Measured, ZeRO
+made them slower and used more memory (numbers below). ZeRO starts to pay off
+when you fully fine-tune a large backbone with AdamW on several GPUs.
+
+### What ZeRO shards
+
+With `mixed_precision: bf16` the runner uses DeepSpeed's `torch_autocast`, so the
+master weights stay fp32. With AdamW, each **trainable** parameter then needs
+16 bytes of model state on every GPU under DDP: 4 for the weight, 4 for the
+gradient and 8 for Adam's two moments. A **frozen** parameter needs only its
+4-byte weight. Activations come on top, and depend on image size, batch size and
+target count, not on the ZeRO stage.
+
+ZeRO splits parts of the model state across the N ranks:
+
+| stage | split across ranks | bytes per trainable parameter, per GPU (AdamW) | cost compared with DDP |
+| ----- | ------------------ | ---------------------------------------------- | ---------------------- |
+| DDP / ZeRO-0 | nothing | 16 | – |
+| ZeRO-1 | optimizer state | 4 + 4 + 8/N | about the same communication |
+| ZeRO-2 | optimizer state + gradients | 4 + 12/N | about the same communication (reduce-scatter instead of all-reduce), plus bucket overhead |
+| ZeRO-3 | + weights | 16/N, plus the layer being gathered | every sub-module is gathered in forward and again in backward: several times slower |
+| ZeRO-1/2 + `offload_optimizer: {device: cpu}` | optimizer state, gradient partitions and the Adam step moved to CPU RAM | about 4 (the weights) on the GPU, plus buckets | a GPU-CPU copy and a CPU Adam step every iteration |
+
+So the most ZeRO-2 can save per GPU is `12 x P x (1 - 1/N)` bytes, where `P` is
+the number of trainable parameters. On 2 GPUs that is 6 bytes per trainable
+parameter.
+
+Worked examples (rough, model state only):
+
+| model | trainable params | DDP model state | ZeRO-2 saving, 2 GPUs | ZeRO-2 saving, 8 GPUs |
+| ----- | ---------------: | --------------: | --------------------: | --------------------: |
+| ViT-S DINOv3 CoMer **LoRA** + RTMDet (SODA-A configs) | ~20 M | ~0.3 GB | ~0.1 GB | ~0.2 GB |
+| SO400M trunk **fully fine-tuned** | ~0.4 B | ~6.4 GB | ~2.4 GB | ~4.2 GB |
+
+In the first row the saving is smaller than DeepSpeed's own buffers (gradient
+and communication buckets, flat fp32 partitions), so memory goes *up*. That is
+what the measured runs show:
+
+| run | DDP bf16 | ZeRO-2 | ZeRO-3 |
+| --- | -------- | ------ | ------ |
+| 2 GPUs, SODA-A ViT-S CoMer LoRA, batch 8/GPU | 0.62 s/iter, 13.9 GB | 0.89 s/iter, 21.0 GB | hangs (see below) |
+| 1 GPU, proxy DOTA SO400M CoMer LoRA | 0.95 s/iter, 25.8 GB | 29.9 GB | 30.6 GB, roughly 4x slower than ZeRO-2 |
+
+(The 1-GPU times other than bf16 still include warm-up; details in
+[Verified runs](#verified-runs).)
+
+### Decision guide
+
+1. **Start with DDP + bf16.** It is the fastest recipe, and the only one that works
+   with everything: MuonAdamW, fp8, fp16, SyncBN.
+2. **Out of memory? First check what uses it.** Compare `16 x trainable params`
+   (the log line `accelerate prepared ... (N M trainable parameters)` gives
+   the count) with the step peak (`memory` in the training log). If model state is a small part, which
+   is the case for every frozen-trunk or LoRA config here, ZeRO cannot help.
+   Reduce activation memory instead:
+   - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (always);
+   - `ChunkedDynamicSoftLabelAssigner` for dense images (see [GPU memory](#gpu-memory));
+   - gradient checkpointing in the backbone: `vit_with_cp: true` (ViT blocks) and
+     `with_cp: true` (CoMer adapter) on `CRADIOv4CoMer`;
+   - a smaller `train_dataloader.batch_size` with
+     `accelerator.gradient_accumulation_steps` to keep the global batch.
+3. **Use ZeRO-2 when model state is a large part of GPU memory**: full fine-tuning
+   of a ViT-L / SO400M / ViT-H trunk with AdamW, on 4 or more GPUs. The saving
+   grows with the number of GPUs; on 2 GPUs it is at most 6 bytes per parameter.
+   Prefer ZeRO-2 over ZeRO-1: it saves more, at the same communication cost.
+4. **Add `offload_optimizer: {device: cpu}` if ZeRO-2 is still not enough**, and
+   the node has spare CPU RAM (roughly 16 bytes per trainable parameter for the
+   whole node, pinned) and CPU cores. Expect a slower step. AdamW / Adam only (they are
+   swapped for `DeepSpeedCPUAdam`).
+5. **Avoid ZeRO-3 for now.** With RTMDet it hangs on 2+ GPUs (data-dependent
+   backward, see [Verified runs](#verified-runs)). It is several times slower.
+   And with `EMAHook`, `ZeRO3EMAHook` keeps a full copy of the model on every
+   GPU, which gives back much of the weight saving. It is only worth trying for a
+   model whose trainable weights do not fit on one GPU, after checking that its
+   backward is the same on every rank.
+
+| situation | recipe |
+| --------- | ------ |
+| frozen trunk, LoRA, or any config in `configs/accelerate/` | DDP + bf16 |
+| MuonAdamW, fp8 or fp16 | DDP (the runner rejects ZeRO 1-3 for these) |
+| OOM with a frozen / LoRA trunk | activation fixes from step 2, not ZeRO |
+| full fine-tune of a large backbone, AdamW, 4+ GPUs, model state is a large part of memory | ZeRO-2 + bf16 |
+| the same, still OOM | ZeRO-2 + `offload_optimizer: {device: cpu}` |
+| trainable weights alone do not fit on one GPU | ZeRO-3, experimental; check the 2-GPU hang first |
+
+### How to use it
+
+Use the ready-made configs, or add a `deepspeed` entry to the `accelerator:` block
+of any accelerate config:
+
+```yaml
+_base_: ./cradiov4-so400m-comer-lora_rtmdet-p2-3x-dota_ms_accel-bf16.yaml
+
+accelerator:
+  mixed_precision: bf16            # bf16 only with ZeRO 1-3 (fp16 / fp8 are rejected)
+  deepspeed:
+    zero_optimization:
+      stage: 2
+      overlap_comm: true           # overlap the gradient reduce-scatter with backward
+      contiguous_gradients: true   # copy gradients into one buffer, less fragmentation
+      reduce_bucket_size: 50000000      # elements; smaller = less memory, more NCCL calls
+      allgather_bucket_size: 50000000
+      # offload_optimizer: {device: cpu, pin_memory: true}
+```
+
+Then launch exactly as for DDP. The launcher only gives the topology; DDP vs
+ZeRO comes from the config:
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+accelerate launch --num_processes 4 tools/accelerate/train.py $CFG
+
+# switch stage, or turn on offload, without a new config
+accelerate launch --num_processes 4 tools/accelerate/train.py $CFG \
+    --cfg-options accelerator.deepspeed.zero_optimization.stage=1
+```
+
+Things to know:
+
+- **Leave out** `optimizer`, `scheduler`, `bf16` and `fp16` sections and the batch
+  sizes: mmengine builds the optimizer and schedulers, and the runner fills in
+  the rest (see [DeepSpeed](#deepspeed)). The runner refuses the config with an
+  explanation otherwise.
+- `train_dataloader.batch_size` stays the per-GPU batch; the global batch is still
+  `num_processes x batch_size x gradient_accumulation_steps`, the same as DDP.
+- `optim_wrapper.clip_grad` must be L2 norm clipping (`max_norm`, `norm_type: 2`);
+  DeepSpeed clips nothing else.
+- `paramwise_cfg` (layer decay, lr multipliers, no weight decay on norms) works:
+  DeepSpeed keeps mmengine's parameter groups.
+- `accelerate launch --use_deepspeed` (or a DeepSpeed launch config) is used only
+  when the mmrotate config has no `accelerator.deepspeed`, and goes through the
+  same checks.
+- Checkpoints: `epoch_N.pth` stays a normal mmengine checkpoint with full
+  weights, so `tools/test.py` and deployment tools read it. The sharded
+  optimizer state for `--resume` goes to `accelerate_state/epoch_N/`; resume
+  with the same ZeRO stage and the same number of GPUs.
+- Running a ZeRO config on 1 GPU (`python tools/accelerate/train.py $CFG`) is
+  fine for testing it, but there is nothing to split, so it only costs memory
+  and time.
 
 ## How it works
 
@@ -436,8 +578,9 @@ All runs used the `2026.11.05` image on RTX PRO 6000 Blackwell GPUs.
   (147 456 elements) for a module backward. So the ranks ran a different set of
   module backwards in that iteration: something in the model's backward depends
   on the data. ZeRO-3 needs the same sequence on every rank. ZeRO-3 works on
-  1 GPU. For these models, whose trainable part is about 20 M parameters, ZeRO-2
-  gives most of the memory saving anyway.
+  1 GPU. For these models, whose trainable part is about 20 M parameters, ZeRO
+  saves nothing measurable anyway (see
+  [DeepSpeed ZeRO: when to use it](#deepspeed-zero-when-to-use-it)).
 
 ## Merging into another fork
 
