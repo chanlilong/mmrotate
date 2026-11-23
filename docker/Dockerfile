@@ -1,4 +1,4 @@
-# voltronix-mmrotate-dev: the one dev / training / TensorRT image for this repo (see docker/README.md).
+# voltronix-mmrotate-dev: the one dev / training / TensorRT / REST API image for this repo (see docker/README.md).
 # The build context is docker/ (certs/, confs/, setup_files/, requirements/ live next to this file):
 #   docker buildx build --load -f docker/Dockerfile -t <registry>/voltronix-mmrotate-dev:<date> docker
 # mmrotate itself is not installed: mount the repo at /mmrotate and set PYTHONPATH=/mmrotate.
@@ -119,6 +119,11 @@ RUN DS_ACCELERATOR=cuda TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0;12.0+PTX" \
 RUN uv pip install torchao==0.18.0+cu130 --index-url https://download.pytorch.org/whl/cu130 \
     --system --no-cache-dir --no-deps
 
+# 11c. REST API for qgis_annotations (api/, `python -m api`): fastapi + uvicorn, and httpx for its
+# tests. Last in the builder so the layers above stay cached; versions come from constraints-dev.
+COPY ./requirements/requirements-api.txt ./requirements-api.txt
+RUN uv pip install -r requirements-api.txt -c constraints.txt --system --no-cache-dir
+
 # 12. Install GDAL and FFmpeg via Conda
 # Installing ffmpeg here avoids needing RPMFusion in the base image
 RUN CONDA_NO_PLUGINS=true conda clean --all -y
@@ -204,6 +209,7 @@ RUN echo "✅ Verifying installations..." && \
     python -c "import numpy" && \
     python -c "import rasterio; from rasterio.crs import CRS; print(f'Rasterio GDAL: {rasterio.__gdal_version__}'); CRS.from_epsg(4326)" && \
     python -c "import cv2" && \
+    python -c "import fastapi, uvicorn, httpx; print(f'FastAPI: {fastapi.__version__}, uvicorn: {uvicorn.__version__}')" && \
     gcc --version && \
     pytest --version && \
     sonar-scanner --version && \

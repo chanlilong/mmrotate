@@ -3,12 +3,12 @@
 # Run one command in a docker image on the GPU slurm allocates (tests, the suggest tool, a
 # short-lived service):
 #
-#   IMAGE=mmrotate-api:dev sbatch --nodelist=hammond api/slurm_run.sbatch \
+#   sbatch --nodelist=hammond api/slurm_run.sbatch \
 #       python -m pytest tests/test_api -q
-#   IMAGE=... sbatch api/slurm_run.sbatch \
+#   sbatch api/slurm_run.sbatch \
 #       python -m tools.similarity.suggest_api_hyperparameters <config> <weights>
 #
-# Env: IMAGE (required), DOCKER_ARGS (extra `docker run` arguments).
+# Env: IMAGE (default: the repo image, docker/Dockerfile), DOCKER_ARGS (extra `docker run` arguments).
 #SBATCH --partition=sep
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 cd "${SLURM_SUBMIT_DIR:-.}"
-: "${IMAGE:?set IMAGE to the docker image to run in}"
+IMAGE=${IMAGE:-artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23}
 echo "job ${SLURM_JOB_ID:-} on $(hostname): $* ($(date))"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "FATAL: no image $IMAGE on $(hostname)"; exit 1; }
 # Docker does not see slurm's GPU cgroup: pin the container to the allocated card by UUID.

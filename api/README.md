@@ -21,24 +21,27 @@ You need the training config and the checkpoint, nothing else: the backbone's pr
 weights are never downloaded, because everything comes from the checkpoint.
 
 ```bash
-# in the dev image (or any env with this repo on PYTHONPATH + api/requirements.txt)
+# in the repo's one image, docker/Dockerfile (or any env with this repo on PYTHONPATH plus
+# docker/requirements/requirements-api.txt)
 python -m api --config work_dirs/soda_dinov3/<run>/<run>.yaml \
               --weights work_dirs/soda_dinov3/<run>/epoch_6.pth \
               --gsd 0.5 --model-name soda-vitdet
 ```
 
-Docker (self-contained, airgapped-friendly):
+Docker: the repo has one image, `voltronix-mmrotate-dev` (`docker/Dockerfile`), which includes
+the API's packages from tag 2026.11.23. The service runs from the mounted repo, and `api/`
+carries the Swagger UI / ReDoc assets, so nothing is fetched (airgapped-friendly):
 
 ```bash
-docker build -f api/Dockerfile -t mmrotate-api .          # from the repo root
-docker run --gpus all -p 8200:8200 -v /path/to/model:/model:ro mmrotate-api \
-    --config /model/config.yaml --weights /model/weights.pth --gsd 0.5
+MODEL_DIR=/path/to/model GSD_M=0.5 \
+    docker compose -f docker/docker-compose.yaml --profile api up -d mmrotate-api
 ```
 
-`api/docker-compose.yml` is the same thing driven by `MMROTATE_API_*` environment variables.
+The `mmrotate-api` compose service is driven by `MMROTATE_API_*` environment variables.
+`docker/README.md` has the equivalent `docker run` line, and the `docker save` / `docker load`
+steps for carrying the image (a `.tar.gz` in `docker/`) to the airgapped side.
 Every flag below has an environment form: `--detector-tile-size` is
 `MMROTATE_API_DETECTOR_TILE_SIZE`, and a flag on the command line wins over the environment.
-To export the image to the airgapped side, use `docker save mmrotate-api | gzip > api.tar.gz`.
 
 Start-up loads the model and runs a **self-test** (a grey and a random tile through each
 service) before listening. A config and checkpoint that don't fit therefore fail at
@@ -256,7 +259,7 @@ padding.
 GPU runs on this cluster go through slurm:
 
 ```bash
-IMAGE=mmrotate-api:dev sbatch --nodelist=hammond api/slurm_run.sbatch \
+sbatch --nodelist=hammond api/slurm_run.sbatch \
     python -m tools.similarity.suggest_api_hyperparameters CONFIG WEIGHTS --gsd 0.5
 ```
 
@@ -299,7 +302,7 @@ Tests:
   without the checkpoint.
 
 ```bash
-IMAGE=mmrotate-api:dev sbatch --nodelist=hammond api/slurm_run.sbatch \
+sbatch --nodelist=hammond api/slurm_run.sbatch \
     python -m pytest tests/test_api tests/test_tools/test_suggest_api_hyperparameters.py -q
 ```
 

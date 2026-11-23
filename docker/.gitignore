@@ -1,0 +1,2 @@
+# `docker save` exports of the image (see README.md): far too big for git
+*.tar.gz
