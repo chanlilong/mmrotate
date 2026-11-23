@@ -1,0 +1,5 @@
+# REST API (api/, `python -m api`): fastapi + uvicorn serve it, httpx is for its tests
+# (fastapi.testclient). Installed with -c constraints-dev.txt, which pins their versions.
+fastapi
+uvicorn
+httpx

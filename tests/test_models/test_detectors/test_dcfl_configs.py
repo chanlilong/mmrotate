@@ -3,11 +3,12 @@ import time
 
 import pytest
 import torch
-from mmengine.config import Config, ConfigDict
+from mmengine.config import ConfigDict
 from mmengine.logging import MessageHub
 
 from mmrotate.registry import MODELS, TASK_UTILS
-from mmrotate.testing import demo_mm_inputs, get_detector_cfg
+from mmrotate.testing import demo_mm_inputs
+from mmrotate.testing.frozen_configs import frozen_detector_cfg, real_config
 from mmrotate.utils import register_all_modules
 
 register_all_modules()
@@ -44,8 +45,8 @@ IMAGE_SHAPES = [[3, 128, 128], [3, 128, 128]]
 @pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_config_contents(cfg_file: str) -> None:
     base_file, head_type = CONFIGS[cfg_file]
-    cfg = Config.fromfile(f'configs/{cfg_file}')
-    base = Config.fromfile(f'configs/{base_file}')
+    cfg = real_config(cfg_file)
+    base = real_config(base_file)
     head = cfg.model.bbox_head
     assert head.type == head_type
     assigner = cfg.model.train_cfg.assigner
@@ -80,7 +81,7 @@ def _tiny_cradio(model: ConfigDict) -> ConfigDict:
 
 
 def _model_cfg(cfg_file: str, device: str) -> ConfigDict:
-    model = get_detector_cfg(cfg_file)
+    model = frozen_detector_cfg(cfg_file)
     if model.backbone.get('init_cfg'):
         model.backbone.init_cfg = None
     if 'checkpoint' in model.backbone:

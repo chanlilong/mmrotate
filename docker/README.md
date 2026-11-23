@@ -1,20 +1,21 @@
 # Check with Trivy
 
 ```bash
-docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.0 --insecure image artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.19
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.69.0 --insecure image artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23
 ```
 
 # voltronix-mmrotate-dev (docker/Dockerfile)
 
 The only Docker build for this repo: development, training (`mmrotate/accelerate`, DeepSpeed,
-torchao) and TensorRT export (`mmrotate/tensorrt`, `tools/tensorrt`) all use this one image.
+torchao), TensorRT export (`mmrotate/tensorrt`, `tools/tensorrt`) and the REST API for
+qgis_annotations (`api/`) all use this one image.
 It was moved here from the `mmrotate_build` repo (`docker/dockerfile-redhat`), and its
 `certs/`, `confs/`, `setup_files/` and `requirements/` folders now sit next to the Dockerfile, so
 the build context is `docker/`:
 
 ```bash
 docker buildx build --load -f docker/Dockerfile \
-    -t artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.19 docker
+    -t artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23 docker
 ```
 
 | component | version |
@@ -30,13 +31,42 @@ mmrotate itself is not installed. Mount the repo and put it on `PYTHONPATH`:
 
 ```bash
 docker run --rm -it --gpus all --ipc host -e PYTHONPATH=/mmrotate -v "$PWD":/mmrotate -v /mnt:/mnt \
-    -w /mmrotate artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.19
+    -w /mmrotate artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23
 # or
 DATA_ROOT=/mnt docker compose -f docker/docker-compose.yaml run --rm mmrotate-dev
 # inside the container
 python docker/verify_mmcv.py   # GPU smoke test: mmcv CUDA ops, Triton MSDA, configs
 ```
 
+## REST API and airgapped export
+
+The image has the API's packages (`requirements/requirements-api.txt`: fastapi, uvicorn, httpx).
+The service runs from the mounted repo like everything else (`api/` carries its Swagger UI /
+ReDoc assets, so nothing is fetched), as the `mmrotate-api` compose service (profile `api`):
+
+```bash
+MODEL_DIR=/path/to/model GSD_M=0.5 \
+    docker compose -f docker/docker-compose.yaml --profile api up -d mmrotate-api
+# or by hand
+docker run -d --gpus all -p 8200:8200 -e PYTHONPATH=/mmrotate -e HF_HUB_OFFLINE=1 \
+    -v "$PWD":/mmrotate:ro -v /path/to/model:/model:ro -w /mmrotate --entrypoint python \
+    artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23 \
+    -m api --config /model/config.yaml --weights /model/weights.pth --gsd 0.5
+```
+
+See `api/README.md` for the flags and registering the service in qgis_annotations. To carry the
+image to an airgapped host, save it next to this file (`*.tar.gz` is git-ignored here) and take
+the repo with it:
+
+```bash
+docker save artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23 \
+    | pigz > docker/voltronix-mmrotate-dev_2026.11.23.tar.gz
+docker load -i docker/voltronix-mmrotate-dev_2026.11.23.tar.gz   # on the airgapped host
+```
+
+- **2026.11.23**: adds the REST API's packages (`fastapi==0.146.0`, `uvicorn==0.54.0`,
+  `httpx==0.28.1`, pinned by `constraints-dev.txt`) in a last builder step, so the layers above
+  are the 2026.11.19 ones. Replaces the separate `api/Dockerfile`.
 - **2026.11.19**: moved into this repo, replacing the old `docker/Dockerfile` (mmcv 2.1.0 on
   `pytorch/pytorch`) and `docker/Dockerfile.trt`. Same packages as 2026.11.05; the verification
   step also checks `tensorrt.plugin` AOT support (needed by the MSDA plugin) and polygraphy / onnx.

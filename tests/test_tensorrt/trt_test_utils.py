@@ -10,7 +10,7 @@ import torch
 from mmengine.config import ConfigDict
 
 from mmrotate.registry import MODELS
-from mmrotate.testing import get_detector_cfg
+from mmrotate.testing.frozen_configs import frozen_detector_cfg
 from mmrotate.utils import register_all_modules
 
 TINY_DIM = 32
@@ -25,7 +25,7 @@ CONFIGS = {
 
 def tiny_model_cfg(name: str) -> ConfigDict:
     """``model`` config of :data:`CONFIGS[name]` with a 4-block, 32-dim ViT."""
-    model = get_detector_cfg(CONFIGS[name])
+    model = frozen_detector_cfg(CONFIGS[name])
     backbone = model.backbone
     backbone.checkpoint = None
     backbone.vit_cfg = TINY_VIT

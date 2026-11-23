@@ -3,11 +3,12 @@ import time
 
 import pytest
 import torch
-from mmengine.config import Config, ConfigDict
+from mmengine.config import ConfigDict
 from mmengine.logging import MessageHub
 
 from mmrotate.registry import MODELS
-from mmrotate.testing import demo_mm_inputs, get_detector_cfg
+from mmrotate.testing import demo_mm_inputs
+from mmrotate.testing.frozen_configs import frozen_detector_cfg, real_config
 from mmrotate.utils import register_all_modules
 
 CONFIGS = {
@@ -36,7 +37,7 @@ TINY_VIT = dict(embed_dim=TINY_DIM, depth=4, num_heads=2, max_img_size=256)
 
 def _tiny_detector_cfg(cfg_file: str) -> ConfigDict:
     """Shrink the ViT-H config so the full detector runs quickly on CPU."""
-    model = get_detector_cfg(cfg_file)
+    model = frozen_detector_cfg(cfg_file)
     backbone = model.backbone
     backbone.checkpoint = None
     backbone.vit_cfg = TINY_VIT
@@ -56,7 +57,7 @@ def _tiny_detector_cfg(cfg_file: str) -> ConfigDict:
 
 @pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_config_contents(cfg_file: str) -> None:
-    cfg = Config.fromfile(f'configs/{cfg_file}')
+    cfg = real_config(cfg_file)
     backbone_type, strides = CONFIGS[cfg_file]
     assert cfg.default_scope == 'mmrotate'
     assert cfg.model.type == 'mmdet.RTMDet'

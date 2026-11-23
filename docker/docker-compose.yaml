@@ -2,9 +2,16 @@
 #   docker compose -f docker/docker-compose.yaml build
 #   docker compose -f docker/docker-compose.yaml run --rm mmrotate-dev
 # Override the image tag with IMAGE=..., and the data mount with DATA_ROOT=/path/to/data.
+#
+# The same image serves the REST API (api/README.md) for qgis_annotations, one model per service:
+#   MODEL_DIR=/path/to/model GSD_M=0.5 docker compose -f docker/docker-compose.yaml --profile api up -d mmrotate-api
+# MODEL_DIR holds config.yaml + weights.pth (and optionally similarity_profile.npz from
+# tools/similarity/suggest_api_hyperparameters.py). Register in the qgis_annotations admin:
+#   http://<host>:8200/detector    kind "fixed classes"
+#   http://<host>:8200/similarity  kind "Similarity features"
 services:
   mmrotate-dev:
-    image: ${IMAGE:-artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.19}
+    image: ${IMAGE:-artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23}
     build:
       context: .
       dockerfile: Dockerfile
@@ -27,4 +34,46 @@ services:
           devices:
             - driver: nvidia
               count: all
+              capabilities: [gpu]
+
+  mmrotate-api:
+    profiles: [api]
+    image: ${IMAGE:-artifactory.project.dso/srsep-docker/voltronix-mmrotate-dev:2026.11.23}
+    working_dir: /mmrotate
+    entrypoint: [python, -m, api]
+    environment:
+      PYTHONPATH: /mmrotate
+      HOME: /tmp
+      PYTHONUNBUFFERED: "1"
+      # libraries in the image phone home at import (HF kernels, albumentations version check)
+      HF_HUB_OFFLINE: "1"
+      NO_ALBUMENTATIONS_UPDATE: "1"
+      MMROTATE_API_CONFIG: /model/config.yaml
+      MMROTATE_API_WEIGHTS: /model/weights.pth
+      MMROTATE_API_GSD: ${GSD_M:-0.5}              # metres/pixel the model was trained at
+      MMROTATE_API_MODEL_NAME: ${MODEL_NAME:-mmrotate}
+      # MMROTATE_API_SIMILARITY_GSD: "none"         # similarity gsd_m: default the GSD above; a number, or none = native px
+      # MMROTATE_API_SIMILARITY_PROFILE: /model/similarity_profile.npz
+      # MMROTATE_API_INPUT_SIZE: "1024"             # default: from the config's test pipeline
+      # MMROTATE_API_DETECTOR_TILE_SIZE: "2048"     # bigger tiles run as windows inside
+      # MMROTATE_API_SERVICES: detector             # or similarity; default both
+      # MMROTATE_API_PRECISION: fp16
+    volumes:
+      - ..:/mmrotate:ro                             # the code (api/ includes the Swagger assets)
+      - ${MODEL_DIR:-./model}:/model:ro
+    ports:
+      - "${MMROTATE_API_HOST_PORT:-8200}:8200"
+    shm_size: 2g
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8200/', timeout=4)"]
+      interval: 60s
+      timeout: 5s
+      start_period: 600s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
               capabilities: [gpu]

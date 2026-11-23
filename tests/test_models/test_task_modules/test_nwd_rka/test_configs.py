@@ -3,11 +3,12 @@ import time
 
 import pytest
 import torch
-from mmengine.config import Config, ConfigDict
+from mmengine.config import ConfigDict
 from mmengine.logging import MessageHub
 
 from mmrotate.registry import MODELS, TASK_UTILS
-from mmrotate.testing import demo_mm_inputs, get_detector_cfg
+from mmrotate.testing import demo_mm_inputs
+from mmrotate.testing.frozen_configs import frozen_detector_cfg, real_config
 from mmrotate.utils import register_all_modules
 
 register_all_modules()
@@ -44,7 +45,7 @@ def _message_hub() -> None:
 
 @pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_config_builds_assigner(cfg_file: str) -> None:
-    cfg = Config.fromfile(f'configs/{cfg_file}')
+    cfg = real_config(cfg_file)
     key, assigner_type = CONFIGS[cfg_file]
     assigner_cfg = cfg.model.train_cfg
     for part in key.split('.'):
@@ -79,8 +80,8 @@ def _loss(model: ConfigDict, image_shapes: list[list[int]] = IMAGE_SHAPES) -> di
     ],
 )
 def test_rtmdet_loss_cpu(assigner_cfg_file: str) -> None:
-    model = get_detector_cfg('nwd_rka/rotated-rtmdet-tiny_nwd-rka-proxy.py')
-    model.train_cfg.assigner = get_detector_cfg(assigner_cfg_file).train_cfg.assigner
+    model = frozen_detector_cfg('nwd_rka/rotated-rtmdet-tiny_nwd-rka-proxy.py')
+    model.train_cfg.assigner = frozen_detector_cfg(assigner_cfg_file).train_cfg.assigner
     model.bbox_head.loss_bbox = CPU_BOX_LOSS
     # RTMDet's data preprocessor does not pad to a multiple of the max stride
     losses = _loss(model, [[3, 128, 128], [3, 128, 128]])
@@ -88,13 +89,13 @@ def test_rtmdet_loss_cpu(assigner_cfg_file: str) -> None:
 
 
 def test_retinanet_loss_cpu() -> None:
-    model = get_detector_cfg('nwd_rka/rotated-retinanet-rbox-le90_r50_fpn_nwd-rka-1x_dota.py')
+    model = frozen_detector_cfg('nwd_rka/rotated-retinanet-rbox-le90_r50_fpn_nwd-rka-1x_dota.py')
     model.backbone.init_cfg = None
     _loss(model)
 
 
 def test_oriented_rcnn_loss_and_predict_cpu() -> None:
-    model = get_detector_cfg('nwd_rka/oriented-rcnn-le90_r50_fpn_nwd-rka-1x_dota.py')
+    model = frozen_detector_cfg('nwd_rka/oriented-rcnn-le90_r50_fpn_nwd-rka-1x_dota.py')
     model.backbone.init_cfg = None
     assert model.train_cfg.rpn_proposal.nms.type == 'nwd_nms'
     assert model.test_cfg.rpn.nms.type == 'nwd_nms'

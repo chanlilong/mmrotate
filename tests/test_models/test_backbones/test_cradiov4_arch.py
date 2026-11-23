@@ -9,16 +9,16 @@ from pathlib import Path
 
 import pytest
 import torch
-from mmengine.config import Config
 
 from mmrotate.models.backbones import CRADIOv4, CRADIOv4CoMer
 from mmrotate.models.backbones.cradiov4.checkpoint import load_radio_state_dict
 from mmrotate.models.backbones.cradiov4.cradiov4 import default_out_indices, load_radio_weights
 from mmrotate.models.backbones.cradiov4.radio_vit import RADIO_ARCHS, RADIOVisionTransformer
 from mmrotate.models.backbones.cradiov4.vit_comer import split_stages
+from mmrotate.testing.frozen_configs import real_config
 
 SO400M_DIR = '/mnt/zfs/models/nvidia/C-RADIOv4-SO400M'
-SO400M_CFG = 'configs/cradio/cradiov4-so400m-comer_rtmdet-3x-dota_ms.yaml'
+SO400M_CFG = 'cradio/cradiov4-so400m-comer_rtmdet-3x-dota_ms.yaml'
 TINY_VIT = dict(embed_dim=32, depth=4, num_heads=2, max_img_size=256)
 TINY_COMER = dict(
     vit_cfg=TINY_VIT,
@@ -91,14 +91,14 @@ def test_arch_checkpoint_mismatch(tmp_path: Path) -> None:
 
 
 def test_so400m_config() -> None:
-    cfg = Config.fromfile(SO400M_CFG)
+    cfg = real_config(SO400M_CFG)
     backbone = cfg.model.backbone
     assert backbone.type == 'CRADIOv4CoMer'
     assert backbone.arch == 'vit_so400m'
     assert backbone.checkpoint == SO400M_DIR
     assert [tuple(i) for i in backbone.interaction_indexes] == split_stages(27)
     assert cfg.model.neck.in_channels == [1152] * 3
-    assert Config.fromfile(SO400M_CFG.replace('3x-dota_ms', 'proxy')).model == cfg.model
+    assert real_config(SO400M_CFG.replace('3x-dota_ms', 'proxy')).model == cfg.model
 
 
 @pytest.mark.skipif(not osp.isdir(SO400M_DIR), reason='C-RADIOv4-SO400M weights not available')
