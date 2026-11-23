@@ -16,6 +16,7 @@ from torch import Tensor
 
 from mmrotate.registry import MODELS
 
+from .builder import compat_covers
 from .export import unflatten_outputs
 from .runtime import TRTEngine
 
@@ -82,6 +83,11 @@ class TRTSingleStageDetector(SingleStageDetector):
             if device.type != 'cuda':
                 raise RuntimeError('Move the model to a CUDA device before running it')
             self._check_environment(device)
+            if self.meta.get('plugins') == 'jit':
+                # Python-callback plugins must be registered before deserialising.
+                from .plugins import register_plugins
+
+                register_plugins()
             self._engine = TRTEngine(self.engine_file, device)
         return self._engine
 
@@ -95,10 +101,13 @@ class TRTSingleStageDetector(SingleStageDetector):
                 f'Engine built with TensorRT {built["tensorrt"]}, running {trt.__version__}',
                 stacklevel=3,
             )
-        if built.get('compute_capability') and built['compute_capability'] != cc:
+        level = built.get('hardware_compat', 'none')
+        if not compat_covers(level, built.get('compute_capability'), cc):
             warnings.warn(
                 f'Engine built for compute capability {built["compute_capability"]} '
-                f'({built.get("gpu")}), running on {cc}',
+                f'({built.get("gpu")}, hardware compatibility {level}), running on {cc}: '
+                'rebuild it for this GPU with tools/tensorrt/build_engine.py, or convert '
+                'with --hardware-compat ampere+',
                 stacklevel=3,
             )
 

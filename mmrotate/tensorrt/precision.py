@@ -9,7 +9,9 @@ ONNX graph:
   precision, normalisation and softmax in fp32).
 - ``int8`` / ``fp8``: ModelOpt post-training quantization of the torch model
   (Q/DQ on conv / linear weights and inputs) calibrated on dataset images,
-  then traced under fp16 autocast for the remaining layers. FP8 Q/DQ use
+  then traced under fp16 autocast for the remaining layers. INT8 can be refined
+  with the algorithms of :mod:`mmrotate.tensorrt.quant` (AWQ scale / clip
+  search, GPTQ rounding, automatic exclusion of sensitive layers). FP8 Q/DQ use
   ModelOpt's ONNX export; INT8 Q/DQ use :class:`_Int8QDQ`, as ModelOpt's INT8
   fake-quant op crashes the TorchScript exporter of torch 2.14.
 """
@@ -31,6 +33,11 @@ CALIB_METHODS = ('max', 'mse', 'entropy', 'percentile')
 # (ViT-CoMer), which become sub-pixel positions and softmax inputs. With these
 # quantized to fp8, TensorRT also returned NaNs on a CoMer test model.
 DEFAULT_QUANT_EXCLUDE = ('*bbox_head.rtm_*', '*.sampling_offsets*', '*.attention_weights*')
+# Also kept in high precision when attention is exported in fused form: the
+# projection that takes the attention output (timm / RADIO / LingBot ViTs). A
+# Q node directly on a fused attention makes TensorRT build an int8 attention,
+# which has no kernel beyond 512 tokens (the engine fails to build).
+FUSED_ATTENTION_EXCLUDE = ('*.attn.proj',)
 
 
 def autocast_dtype(precision: str) -> torch.dtype | None:
@@ -88,6 +95,26 @@ def _histogram_recalibrate(
             q.load_calib_amax(method, **kwargs)
         except RuntimeError:  # never reached by the calibration data
             logger.warning('No calibration data reached %s, keeping its max amax', name)
+        q.enable_quant()
+        q.disable_calib()
+
+
+@torch.no_grad()
+def _recalibrate_inputs(model: nn.Module, forward_loop: Callable[[nn.Module], None]) -> None:
+    """Max-calibrate the activation quantizers again (after their inputs were rescaled)."""
+    from modelopt.torch.quantization.calib import MaxCalibrator
+
+    quantizers = list(_input_quantizers(model))
+    for _, q in quantizers:
+        q._calibrator = MaxCalibrator(num_bits=q.num_bits, axis=q.axis, unsigned=q.unsigned)
+        q.disable_quant()
+        q.enable_calib()
+    forward_loop(model)
+    for name, q in quantizers:
+        try:
+            q.load_calib_amax()
+        except RuntimeError:  # never reached by the calibration data
+            logger.warning('No calibration data reached %s, keeping its amax', name)
         q.enable_quant()
         q.disable_calib()
 
@@ -176,10 +203,16 @@ def quantize(
     method: str = 'max',
     exclude: Sequence[str] = DEFAULT_QUANT_EXCLUDE,
     percentile: float = 99.99,
+    algos: Sequence[str] = (),
+    exclude_budget: float | None = None,
+    refine_batches: int = 2,
+    report: dict | None = None,
 ) -> nn.Module:
     """Insert ModelOpt quantizers into ``model`` and calibrate them in place.
 
-    BatchNorms are folded into their convs first (:func:`fold_conv_bn`).
+    BatchNorms are folded into their convs first (:func:`fold_conv_bn`). With
+    ``algos`` / ``exclude_budget`` the calibrated INT8 model is then refined by
+    :func:`mmrotate.tensorrt.quant.refine`.
 
     Args:
         model: Detector in eval mode (inside ``export_mode``).
@@ -189,8 +222,18 @@ def quantize(
             ``'percentile'`` (histograms of the activations, int8 only).
         exclude: Module name patterns (fnmatch) that are not quantized.
         percentile: Percentile for ``method='percentile'``.
+        algos: INT8 refinement algorithms, a subset of
+            :data:`mmrotate.tensorrt.quant.QUANT_ALGOS`.
+        exclude_budget: Output noise budget of the automatic exclusion of
+            sensitive layers (INT8; ``None``: off).
+        refine_batches: Calibration batches the refinement works on.
+        report: If given, filled with what the refinement did.
     """
     import modelopt.torch.quantization as mtq
+
+    refining = bool(algos) or exclude_budget is not None
+    if refining and precision != 'int8':
+        raise ValueError('AWQ / GPTQ / automatic exclusion are implemented for int8 only')
 
     if precision not in ('int8', 'fp8'):
         raise ValueError(f'Cannot quantize to {precision}')
@@ -209,8 +252,21 @@ def quantize(
     if method == 'mse':
         cfg['algorithm'] = 'mse'
     model = mtq.quantize(model, cfg, forward_loop)
+
+    def recalibrate(m: nn.Module) -> None:
+        if method in ('entropy', 'percentile'):
+            _histogram_recalibrate(m, forward_loop, method, percentile)
+        else:
+            _recalibrate_inputs(m, forward_loop)
+
     if method in ('entropy', 'percentile'):
         _histogram_recalibrate(model, forward_loop, method, percentile)
+    if refining:
+        from .quant import refine
+
+        result = refine(model, batches[:refine_batches], algos, exclude_budget, recalibrate)
+        if report is not None:
+            report.update(result)
     _fix_degenerate_amax(model, precision)
     num = sum(1 for _ in _input_quantizers(model))
     logger.info('Quantized %d layer inputs to %s (%s calibration)', num, precision, method)
@@ -247,21 +303,55 @@ def _int8_qdq_forward(quantizer: nn.Module) -> Callable[[Tensor], Tensor]:
     scale = (amax.flatten() if axis is not None else amax.reshape(())) / 127.0
     scale = scale.masked_fill(scale == 0, 1.0)
 
+    pre_scale = getattr(quantizer, 'pre_quant_scale', None)
+
     def forward(x: Tensor) -> Tensor:
         # Q/DQ in the dtype the consumer runs in, so TensorRT fuses them.
         if torch.is_autocast_enabled(x.device.type):
             x = x.to(torch.get_autocast_dtype(x.device.type))
+        if pre_scale is not None:  # AWQ per-channel input scale
+            x = x * pre_scale.to(x.device, x.dtype)
         return _Int8QDQ.apply(x, scale.to(x.device, x.dtype), axis)
 
     return forward
 
 
+def _fp32_layer_forward(forward: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Tensor]:
+    def wrapped(x: Tensor) -> Tensor:
+        with torch.autocast(x.device.type, enabled=False):
+            return forward(x.float())
+
+    return wrapped
+
+
 @contextmanager
-def int8_export_mode(model: nn.Module) -> Iterator[None]:
-    """Export the enabled INT8 quantizers of ``model`` as ONNX Q/DQ pairs."""
+def int8_export_mode(model: nn.Module, fp32_layers: bool = False) -> Iterator[None]:
+    """Export the enabled INT8 quantizers of ``model`` as ONNX Q/DQ pairs.
+
+    Args:
+        model: Quantized model.
+        fp32_layers: Type the quantized layers and their Q/DQ nodes fp32
+            instead of the autocast dtype. They run as int8 kernels either
+            way; the fp32 typing puts a cast between an unquantized fp16
+            layer and the Q node of the next layer, where TensorRT otherwise
+            fuses the two into an fp16-input / int8-output kernel that is
+            missing or wrong for some layers. Needed for partially quantized
+            models (automatic exclusion); typing only the convolutions fp32
+            is not enough (tested on ConvNeXt-T).
+    """
     from modelopt.torch.quantization.nn import TensorQuantizer
 
     patched = []
+    if fp32_layers:
+        for module in model.modules():
+            quantizer = getattr(module, 'input_quantizer', None)
+            if (
+                isinstance(quantizer, TensorQuantizer)
+                and quantizer.is_enabled
+                and quantizer.num_bits == 8
+            ):
+                module.forward = _fp32_layer_forward(module.forward)
+                patched.append(module)
     for module in model.modules():
         if isinstance(module, TensorQuantizer) and module.is_enabled and module.num_bits == 8:
             module.forward = _int8_qdq_forward(module)

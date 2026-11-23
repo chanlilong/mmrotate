@@ -1,0 +1,12 @@
+# CoMer-lite L (mild): the cheap changes that keep the 384-channel outputs.
+# deform_ratio 0.5, one extra CTI instead of four, and one LayerNorm per
+# attention input. Not included: slim outputs (-2.9 mAP alone) and cfinter in
+# stages 3-4 only (-0.5 mAP for -3% FLOPs).
+_base_: ../soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    type: TimmViTCoMerLite
+    dedup_norm: true
+    deform_ratio: 0.5
+    extra_num: 1

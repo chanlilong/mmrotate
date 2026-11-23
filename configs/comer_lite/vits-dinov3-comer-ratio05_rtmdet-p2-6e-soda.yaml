@@ -1,0 +1,8 @@
+# CoMer-lite A3: deformable-attention value width 0.5 x embed_dim (192 ch, 32 per
+# head) in all 12 MSDA calls, as the C-RADIO configs use. Halves value_proj /
+# output_proj and the sampled bytes.
+_base_: ../soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    deform_ratio: 0.5

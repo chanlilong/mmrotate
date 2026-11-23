@@ -4,8 +4,11 @@
 Applied (and undone) around calibration and export, on the module instances
 only, so no model file changes and the weights stay the same:
 
-- ViT-CoMer ``MSDeformAttn``: the Triton kernels become the ``grid_sample``
-  PyTorch path (``backend='pytorch'``, ``fused=False``).
+- ViT-CoMer ``MSDeformAttn``: with ``msda='plugin'`` the fused Triton kernel is
+  exported as one ``mmrotate::MSDAFused`` node, which the TensorRT plugin of
+  :mod:`~mmrotate.tensorrt.plugins.msda` runs with the same kernel; with
+  ``msda='gridsample'`` it becomes the ``grid_sample`` PyTorch path
+  (``backend='pytorch'``, ``fused=False``; standard ONNX ops only).
 - DCFL DCNv2 layers: torchvision / mmcv ``deform_conv2d`` becomes
   :func:`modulated_deform_conv2d_gridsample`.
 - ViTDet ``LayerNorm2d``: ``F.layer_norm`` with the channel count as a
@@ -13,30 +16,38 @@ only, so no model file changes and the weights stay the same:
   the ONNX exporter rejects).
 - Optionally, modules of the given types run in fp32 with autocast off
   (e.g. ``ConvTranspose2d``, which TensorRT has no bf16 kernel for).
-- ``F.scaled_dot_product_attention`` becomes ``softmax((q * scale) @ k^T) @ v``
-  with the logits and softmax in fp32 (default on). Torch's own ONNX
-  decomposition runs them in the input dtype, so under fp16 autocast the
-  logits are fp16, while torch's fused kernels accumulate in fp32. DINOv3 ViTs
-  have q / k activations of ~2000: their logits overflow fp16 (NaN engines),
-  and even at fp32 TensorRT reproduced the default decomposition poorly
-  (output errors of ~25 at batch 8 on ViT-S CoMer, vs 4e-3 with this form).
+- ``F.scaled_dot_product_attention`` becomes one of the explicit forms of
+  :mod:`~mmrotate.tensorrt.attention`, chosen per call: forms TensorRT fuses
+  into a single attention kernel (``fused``, ``fused-fp32acc``) or the
+  unfused fp32-logit form (``legacy``). Torch's own ONNX decomposition runs
+  under autocast with an fp32 softmax between low-precision matmuls, which
+  TensorRT does not fuse, and its fp16 logits overflow on DINOv3 ViTs (q / k
+  activations of ~2000).
 """
 
 import types
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from .attention import AttentionExporter, patch_sdpa
 from .deform_conv import modulated_deform_conv2d_gridsample
+
+MSDA_EXPORTS = ('plugin', 'gridsample')
 
 
 def _is_msda(module: nn.Module) -> bool:
     from mmrotate.models.backbones.cradiov4.ms_deform_attn import MSDeformAttn
 
     return isinstance(module, MSDeformAttn)
+
+
+def has_msda(model: nn.Module) -> bool:
+    """Whether ``model`` contains ViT-CoMer deformable attention."""
+    return any(_is_msda(module) for module in model.modules())
 
 
 def _is_dcfl_dcn(module: nn.Module) -> bool:
@@ -77,31 +88,6 @@ def _gridsample_deform_conv(self: nn.Module, x: Tensor, offset: Tensor, mask: Te
     )
 
 
-def _sdpa_fp32_logits(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attn_mask: Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    scale: float | None = None,
-    enable_gqa: bool = False,
-) -> Tensor:
-    """``F.scaled_dot_product_attention`` (inference) with fp32 logits / softmax."""
-    if is_causal or dropout_p or enable_gqa:
-        raise NotImplementedError('fp32-logit attention covers plain inference attention only')
-    scale = query.shape[-1] ** -0.5 if scale is None else scale
-    with torch.autocast(query.device.type, enabled=False):
-        logits = (query.float() * scale) @ key.float().transpose(-2, -1)
-        if attn_mask is not None:
-            if attn_mask.dtype == torch.bool:
-                logits = logits.masked_fill(~attn_mask, float('-inf'))
-            else:
-                logits = logits + attn_mask.float()
-        attn = logits.softmax(dim=-1)
-    return attn.to(value.dtype) @ value
-
-
 def _fp32_forward(forward: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Tensor]:
     """``forward`` in fp32 with autocast off; the output stays fp32."""
 
@@ -116,63 +102,74 @@ def _fp32_forward(forward: Callable[[Tensor], Tensor]) -> Callable[[Tensor], Ten
 def export_mode(
     model: nn.Module,
     fp32_types: Sequence[type[nn.Module]] = (),
-    fp32_attention: bool = True,
+    attention: str | Sequence[str] | None = 'legacy',
+    msda: str = 'gridsample',
 ) -> Iterator[list[str]]:
     """Make ``model`` exportable in place; yields the names of patched modules.
 
     Args:
         model: The detector.
         fp32_types: Module types to run in fp32 under autocast.
-        fp32_attention: Replace ``F.scaled_dot_product_attention`` with the
-            explicit fp32-logit form (patched globally while the context is
-            active).
+        attention: Export form of ``F.scaled_dot_product_attention`` (patched
+            globally while the context is active): one form of
+            :data:`~mmrotate.tensorrt.attention.ATTENTION_FORMS` for every
+            call, or one per call in call order (see
+            :func:`~mmrotate.tensorrt.attention.resolve_attention`). ``None``
+            leaves torch's own decomposition.
+        msda: ``'plugin'`` exports ``MSDeformAttn`` as the ``MSDAFused`` custom
+            op (needs CUDA and Triton), ``'gridsample'`` as ``grid_sample``.
     """
+    if msda not in MSDA_EXPORTS:
+        raise ValueError(f'Unknown MSDA export {msda!r}; choose from {MSDA_EXPORTS}')
     undo: list[Callable[[], None]] = []
     patched: list[str] = []
-    if fp32_attention:
-        sdpa = F.scaled_dot_product_attention
-        F.scaled_dot_product_attention = _sdpa_fp32_logits
+    with ExitStack() as stack:
+        if attention is not None:
+            stack.enter_context(patch_sdpa(AttentionExporter(attention)))
+        has_msda = False
+        for name, module in model.named_modules():
+            if fp32_types and isinstance(module, tuple(fp32_types)):
+                module.forward = _fp32_forward(module.forward)
 
-        def _restore_sdpa() -> None:
-            F.scaled_dot_product_attention = sdpa
+                def _restore_fp32(m: nn.Module = module) -> None:
+                    del m.forward
 
-        undo.append(_restore_sdpa)
-    for name, module in model.named_modules():
-        if fp32_types and isinstance(module, tuple(fp32_types)):
-            module.forward = _fp32_forward(module.forward)
+                undo.append(_restore_fp32)
+                patched.append(name)
+            elif _is_msda(module):
+                has_msda = True
+                old = (module.backend, module.fused)
+                module.backend, module.fused = (
+                    ('triton', True) if msda == 'plugin' else ('pytorch', False)
+                )
 
-            def _restore_fp32(m: nn.Module = module) -> None:
-                del m.forward
+                def _restore_msda(m: nn.Module = module, old: tuple = old) -> None:
+                    m.backend, m.fused = old
 
-            undo.append(_restore_fp32)
-            patched.append(name)
-        elif _is_msda(module):
-            old = (module.backend, module.fused)
-            module.backend, module.fused = 'pytorch', False
+                undo.append(_restore_msda)
+                patched.append(name)
+            elif _is_dcfl_dcn(module):
+                module.deform_conv = types.MethodType(_gridsample_deform_conv, module)
 
-            def _restore_msda(m: nn.Module = module, old: tuple = old) -> None:
-                m.backend, m.fused = old
+                def _restore_dcn(m: nn.Module = module) -> None:
+                    del m.deform_conv
 
-            undo.append(_restore_msda)
-            patched.append(name)
-        elif _is_dcfl_dcn(module):
-            module.deform_conv = types.MethodType(_gridsample_deform_conv, module)
+                undo.append(_restore_dcn)
+                patched.append(name)
+            elif _is_layer_norm_2d(module):
+                module.forward = types.MethodType(_static_layer_norm_2d, module)
 
-            def _restore_dcn(m: nn.Module = module) -> None:
-                del m.deform_conv
+                def _restore_ln(m: nn.Module = module) -> None:
+                    del m.forward
 
-            undo.append(_restore_dcn)
-            patched.append(name)
-        elif _is_layer_norm_2d(module):
-            module.forward = types.MethodType(_static_layer_norm_2d, module)
+                undo.append(_restore_ln)
+                patched.append(name)
+        if has_msda and msda == 'plugin':
+            from .plugins.msda import export_msda_as_plugin
 
-            def _restore_ln(m: nn.Module = module) -> None:
-                del m.forward
-
-            undo.append(_restore_ln)
-            patched.append(name)
-    try:
-        yield patched
-    finally:
-        for fn in reversed(undo):
-            fn()
+            stack.enter_context(export_msda_as_plugin())
+        try:
+            yield patched
+        finally:
+            for fn in reversed(undo):
+                fn()
