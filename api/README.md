@@ -195,8 +195,47 @@ The scores are the qgis_annotations similarity measures:
 - **bg_paircos:** anisotropy. Centring brings it to about 0.
 - **same_cos:** the plugin's Nyström γ = 2 expects about 0.76–0.90.
 - **int8 cosine / top-5 % IoU:** what quantisation costs.
+- **False alarms per image (FPPI):** each class's score map over whole held-out images,
+  thresholded as an annotator would, for both the brush (cosine to the class mean of the
+  fit half's objects) and the trained classes (the ridge model).
+  - At a threshold, an object is *found* when any of its cells scores above it.
+  - Every local maximum above the threshold (one per `--fa-peak-px`, 24 px) on the
+    background or on another class's object is one *false alarm*.
+  - Reported like `tools/soda_dinov3/false_alarms.py`:
+    - `FA@R r`: false alarms per image needed to find a fraction r of the objects
+      (`--fa-recalls 0.5 0.7`);
+    - `R@FA N`: recall within N false alarms per image (`--fa-fppi 1 10`);
+    - `map AP`: the score map's AP as a detector;
+    - the share of false alarms that fall on other classes rather than background.
+  - At most `--fa-max-peaks` (100) false alarms are kept per image and class; beyond that
+    the report says `>cap`. Classes with fewer than `--fa-min-objects` (10) eval objects
+    are left out of the FPPI means.
+  - `--no-false-alarms` skips this pass.
+- **Per class:** every AP, recall and false-alarm figure is also reported per class.
+  - `suggestions.md` has a per-class table for the recommendation (brush and ridge AP, map
+    AP, R@FA and FA@R), and the run prints it.
+  - Every row in `suggestions.json` carries the same lists (`*_per_class`, in the config's
+    class order).
 
 The recommendation is the cheapest int8 grid within `--tolerance` (0.005) of the best score.
+With `--rank-by fppi` it is the cheapest int8 grid within `--fa-tolerance` (10 %) of the
+fewest false alarms per image at the first `--fa-recalls` point; stages A and B are then
+ranked that way too.
+
+Example, per class for the recommended CoMer setting (`head_cls`, finest level, stride 4,
+PCA 64, int8; 100 eval images):
+
+| class | objects | brush AP | brush FA@R0.7 | ridge AP | ridge FA@R0.7 |
+|---|---|---|---|---|---|
+| airplane | 63 | 0.928 | 0.03 | 0.974 | 0.14 |
+| small-vehicle | 2475 | 0.953 | 1.00 | 0.978 | 3.06 |
+| container | 579 | 0.828 | 5.23 | 0.935 | 3.51 |
+| ship | 413 | 0.993 | 0.14 | 0.972 | 0.45 |
+| swimming-pool | 133 | 0.991 | 0.05 | 1.000 | 0.23 |
+
+Retrieval AP alone hides where false alarms will annoy annotators: small vehicles and
+containers. The per-class FA columns show it.
+
 The tool writes three files to `work_dirs/similarity/<config>/`:
 
 - `suggestions.md`: every table;
