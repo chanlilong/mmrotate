@@ -1,0 +1,11 @@
+# CoMer-lite A5: slim adapter outputs (ConvNeXt-T-like widths) so the P2 neck
+# layers run at 96 instead of 384 channels; the stride-4 output glue is built at
+# 96 channels directly.
+_base_: ../soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml
+
+model:
+  backbone:
+    type: TimmViTCoMerLite
+    out_channels: [96, 192, 384, 384]
+  neck:
+    in_channels: [96, 192, 384, 384]
