@@ -1,21 +1,23 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from pathlib import Path
-
 import pytest
 import torch
-from mmengine.config import Config
 from torch import nn
 
 from mmrotate.models.backbones import TimmViTCoMer, TimmViTCoMerLite
 from mmrotate.registry import MODELS
+from mmrotate.testing.frozen_configs import (
+    frozen_config,
+    frozen_names,
+    real_config,
+    real_config_dir,
+)
 from mmrotate.utils import register_all_modules
 
 VITS = 'vit_small_patch16_dinov3'
-CFG_DIR = Path(__file__).parents[3] / 'configs/comer_lite'
-BASELINE = (
-    Path(__file__).parents[3] / 'configs/soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml'
-)
-CONFIGS = sorted(p.name for p in CFG_DIR.glob('*.yaml'))
+SUB = 'comer_lite'
+BASELINE = 'soda_dinov3/vits-dinov3-comer_rtmdet-p2-6e-soda.yaml'
+# Frozen snapshots (tests/frozen_configs) so the model tests run without ./configs.
+CONFIGS = frozen_names(SUB)
 SMALL = dict(
     conv_inplane=16,
     norm_cfg=dict(type='BN'),
@@ -86,6 +88,8 @@ def test_dedup_norm_drops_two_norms_per_cnn_interaction() -> None:
 
 
 def test_configs_found() -> None:
+    real = sorted(p.name for p in real_config_dir(SUB).glob('*.yaml'))
+    assert real == CONFIGS
     assert CONFIGS == [
         'vits-dinov3-comer-cfinter-late_rtmdet-p2-6e-soda.yaml',
         'vits-dinov3-comer-extra0_rtmdet-p2-6e-soda.yaml',
@@ -97,7 +101,7 @@ def test_configs_found() -> None:
 
 @pytest.mark.parametrize('name', CONFIGS)
 def test_config_differs_from_baseline_only_in_adapter(name: str) -> None:
-    cfg, base = Config.fromfile(CFG_DIR / name), Config.fromfile(BASELINE)
+    cfg, base = real_config(f'{SUB}/{name}'), real_config(BASELINE)
     for key in ('bbox_head', 'train_cfg', 'test_cfg', 'data_preprocessor'):
         assert cfg.model[key] == base.model[key], key
     for key in ('optim_wrapper', 'param_scheduler', 'train_cfg', 'train_dataloader'):
@@ -112,7 +116,7 @@ def test_config_differs_from_baseline_only_in_adapter(name: str) -> None:
 @pytest.mark.parametrize('name', CONFIGS)
 def test_config_backbone_neck_forward(name: str) -> None:
     register_all_modules()
-    cfg = Config.fromfile(CFG_DIR / name)
+    cfg = frozen_config(f'{SUB}/{name}')
     cfg.model.backbone.update(checkpoint=None, conv_inplane=16, msda_backend='pytorch')
     backbone = MODELS.build(cfg.model.backbone)
     neck = MODELS.build(cfg.model.neck)

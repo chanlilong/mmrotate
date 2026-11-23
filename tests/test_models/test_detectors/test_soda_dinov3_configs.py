@@ -1,6 +1,4 @@
 # Copyright (c) OpenMMLab. All rights reserved.
-from pathlib import Path
-
 import pytest
 import torch
 from mmdet.structures import DetDataSample
@@ -9,15 +7,22 @@ from mmengine.structures import InstanceData
 
 from mmrotate.registry import MODELS
 from mmrotate.structures.bbox import RotatedBoxes
+from mmrotate.testing.frozen_configs import (
+    frozen_config,
+    frozen_names,
+    real_config,
+    real_config_dir,
+)
 from mmrotate.utils import register_all_modules
 
-CFG_DIR = Path(__file__).parents[3] / 'configs/soda_dinov3'
-CONFIGS = sorted(p.name for p in CFG_DIR.glob('*.yaml'))
+SUB = 'soda_dinov3'
+# Frozen snapshots (tests/frozen_configs) so the model tests run without ./configs.
+CONFIGS = frozen_names(SUB)
 SHARED = ('neck', 'bbox_head', 'test_cfg', 'data_preprocessor')
 
 
 def _load(name: str) -> Config:
-    cfg = Config.fromfile(CFG_DIR / name)
+    cfg = frozen_config(f'{SUB}/{name}')
     cfg.model.backbone.checkpoint = None  # random init, no weights needed
     if cfg.model.backbone.type in ('TimmViTCoMer', 'LingBotViTCoMer'):
         cfg.model.backbone.conv_inplane = 16
@@ -35,6 +40,8 @@ def _sample(h: int, w: int) -> DetDataSample:
 
 
 def test_configs_found() -> None:
+    real = sorted(p.name for p in real_config_dir(SUB).glob('*.yaml'))
+    assert real == CONFIGS
     assert 'vits-dinov3-comer_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer-noinj_rtmdet-p2-6e-soda.yaml' in CONFIGS
     assert 'vits-dinov3-comer-lora_rtmdet-p2-6e-soda.yaml' in CONFIGS
@@ -49,8 +56,8 @@ def test_configs_found() -> None:
 
 @pytest.mark.parametrize('name', CONFIGS)
 def test_config_settings(name: str) -> None:
-    cfg = Config.fromfile(CFG_DIR / name)
-    base = Config.fromfile(CFG_DIR / 'vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml')
+    cfg = real_config(f'{SUB}/{name}')
+    base = real_config(f'{SUB}/vits-dinov3-vitdet_rtmdet-p2-6e-soda.yaml')
     # everything but the backbone, neck inputs and assigner is shared
     for key in SHARED:
         a, b = dict(cfg.model[key]), dict(base.model[key])

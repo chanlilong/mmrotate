@@ -12,8 +12,11 @@ import numpy as np
 import pytest
 import torch
 
+from mmrotate.testing.frozen_configs import frozen_config_path
+
 REPO = Path(__file__).resolve().parents[2]
-TINY_CONFIG = str(REPO / 'configs/rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py')
+# Frozen snapshot of configs/rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py (works without ./configs)
+TINY_CONFIG = frozen_config_path('rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py')
 SODA = REPO / 'work_dirs/soda_dinov3'
 VITDET = SODA / 'vits-dinov3-vitdet_rtmdet-p2-6e-soda'
 DCFL = SODA / 'convnext-t-dinov3_rtmdet-p2-dcfl-6e-soda'

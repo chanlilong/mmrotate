@@ -3,12 +3,17 @@ import time
 
 import pytest
 import torch
-from mmengine.config import Config, ConfigDict
+from mmengine.config import ConfigDict
 from mmengine.logging import MessageHub
 from mmengine.optim import build_optim_wrapper
 
 from mmrotate.registry import MODELS
-from mmrotate.testing import demo_mm_inputs, get_detector_cfg
+from mmrotate.testing import demo_mm_inputs
+from mmrotate.testing.frozen_configs import (
+    frozen_config,
+    frozen_detector_cfg,
+    real_config,
+)
 from mmrotate.utils import register_all_modules
 
 CONFIGS = {
@@ -22,7 +27,7 @@ TINY_VIT = dict(embed_dim=TINY_DIM, depth=4, num_heads=2, max_img_size=256, with
 
 def _tiny_detector_cfg(cfg_file: str) -> ConfigDict:
     """Shrink the ViT-H config so the full detector runs quickly."""
-    model = get_detector_cfg(cfg_file)
+    model = frozen_detector_cfg(cfg_file)
     model.backbone.checkpoint = None
     model.backbone.vit_cfg = TINY_VIT
     model.backbone.out_indices = [-1]
@@ -33,7 +38,7 @@ def _tiny_detector_cfg(cfg_file: str) -> ConfigDict:
 
 @pytest.mark.parametrize('cfg_file', list(CONFIGS))
 def test_config_contents(cfg_file: str) -> None:
-    cfg = Config.fromfile(f'configs/{cfg_file}')
+    cfg = real_config(cfg_file)
     model = cfg.model
     assert cfg.default_scope == 'mmrotate'
     assert model.type == 'mmdet.RTMDet'
@@ -104,7 +109,7 @@ def test_forward_predict(cfg_file: str, device: str) -> None:
 
 def test_build_optim_wrapper() -> None:
     cfg_file = next(iter(CONFIGS))
-    cfg = Config.fromfile(f'configs/{cfg_file}')
+    cfg = frozen_config(cfg_file)
     detector = _build(cfg_file, 'cpu')
     optim_cfg = cfg.optim_wrapper
     optim_cfg.paramwise_cfg.num_layers = TINY_VIT['depth']

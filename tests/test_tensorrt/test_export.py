@@ -19,9 +19,9 @@ from mmrotate.tensorrt.export import (
     unflatten_outputs,
 )
 from mmrotate.tensorrt.export_patches import export_mode
+from mmrotate.testing.frozen_configs import frozen_config
 
 REPO = Path(__file__).parents[2]
-CFG_ROOT = REPO / 'configs'
 
 
 def test_flatten_roundtrip() -> None:
@@ -91,11 +91,11 @@ def test_onnx_matches_torch(
     ],
 )
 def test_infer_input_shape(cfg_file: str, shape: tuple[int, int]) -> None:
-    assert infer_input_shape(Config.fromfile(CFG_ROOT / cfg_file)) == shape
+    assert infer_input_shape(frozen_config(cfg_file)) == shape
 
 
 def test_make_deploy_cfg(tmp_path: Path) -> None:
-    cfg = Config.fromfile(CFG_ROOT / 'cradio/cradiov4-h-comer_rtmdet-3x-dota_ms.yaml')
+    cfg = frozen_config('cradio/cradiov4-h-comer_rtmdet-3x-dota_ms.yaml')
     deploy = make_deploy_cfg(cfg)
     assert deploy.model.type == 'TRTSingleStageDetector'
     assert deploy.model.bbox_head == cfg.model.bbox_head
@@ -132,7 +132,7 @@ def test_calibration_loader(tmp_path: Path) -> None:
         ],
         check=True,
     )
-    cfg = Config.fromfile(REPO / 'configs/cradio/cradiov4-h-comer_rtmdet-proxy.yaml')
+    cfg = frozen_config('cradio/cradiov4-h-comer_rtmdet-proxy.yaml')
     for split in ('train', 'val', 'test'):
         cfg[f'{split}_dataloader'].dataset.data_root = f'{data_root}/'
     cfg.test_dataloader.dataset.pipeline = [

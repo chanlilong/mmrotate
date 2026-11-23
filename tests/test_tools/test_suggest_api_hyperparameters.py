@@ -20,11 +20,13 @@ import torch
 from api.model import load
 from api.profile import load_profile
 from api.similarity import SimilarityService
+from mmrotate.testing.frozen_configs import frozen_config_path
 from tools.similarity import metrics
 from tools.similarity.suggest_api_hyperparameters import main
 
 REPO = Path(__file__).resolve().parents[2]
-TINY = REPO / 'configs/rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py'
+# Frozen snapshot of configs/rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py (works without ./configs)
+TINY = Path(frozen_config_path('rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py'))
 VITDET = REPO / 'work_dirs/soda_dinov3/vits-dinov3-vitdet_rtmdet-p2-6e-soda'
 
 
