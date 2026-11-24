@@ -18,17 +18,28 @@ This bridge moves the same data through files instead:
 3. rank 0 writes the metrics as a one-row parquet file, the other ranks poll
    for it. No collective is open while the metric is computed.
 
+Waiting is split in two: *arrival* (a rank's part, or rank 0's, has not
+appeared yet, so that rank is still training, saving a checkpoint or
+validating) is bounded by ``arrive_timeout_s``; rank 0's metric computation by
+``timeout_s``. Each rank publishes a small status file (host, pid, phase) and
+registers a ``SIGUSR1`` stack dump, so a rank that gives up on a missing peer
+on the same host makes that peer print its Python stack before raising.
+
 Arrays are stored as raw bytes plus dtype / shape in a JSON spec, so decoding
 is exact and nothing is unpickled.
 """
 
 from __future__ import annotations
 
+import faulthandler
 import importlib
 import json
 import os
 import os.path as osp
 import shutil
+import signal
+import socket
+import sys
 import time
 import traceback
 from collections.abc import Callable, Sequence
@@ -276,9 +287,18 @@ def wait_for(
     what: str,
     error_file: str | None = None,
     poll_s: float = 0.5,
+    on_slow: Callable[[list[str], float], None] | None = None,
+    report_every_s: float = 300.0,
+    on_timeout: Callable[[list[str]], str] | None = None,
 ) -> None:
-    """Poll until every path in ``paths()`` exists (shared-filesystem rendezvous)."""
-    deadline = time.monotonic() + timeout_s
+    """Poll until every path in ``paths()`` exists (shared-filesystem rendezvous).
+
+    ``on_slow(missing, elapsed_s)`` is called every ``report_every_s`` while
+    waiting; ``on_timeout(missing)`` returns extra text for the ``TimeoutError``.
+    """
+    start = time.monotonic()
+    deadline = start + timeout_s
+    next_report = start + report_every_s
     while True:
         missing = [p for p in paths() if not osp.exists(p)]
         if not missing:
@@ -286,13 +306,103 @@ def wait_for(
         if error_file is not None and osp.exists(error_file):
             with open(error_file) as f:
                 raise RuntimeError(f'rank 0 failed while {what}:\n{f.read()}')
-        if time.monotonic() > deadline:
+        now = time.monotonic()
+        if now > deadline:
+            extra = on_timeout(missing) if on_timeout is not None else ''
             raise TimeoutError(
                 f'timed out after {timeout_s:.0f}s while {what}; still missing: {missing[:4]}'
                 f'{" ..." if len(missing) > 4 else ""}. The bridge directory must be on a '
                 'filesystem every rank can see (set accelerator.eval.dir on multi-node runs).'
+                + (f'\n{extra}' if extra else '')
             )
+        if on_slow is not None and now >= next_report:
+            on_slow(missing, now - start)
+            next_report = now + report_every_s
         time.sleep(poll_s)
+
+
+# --------------------------------------------------------------------------- rank status
+
+_STACK_DUMP_SIGNAL = signal.SIGUSR1 if hasattr(signal, 'SIGUSR1') else None
+
+
+def enable_stack_dumps() -> bool:
+    """Make ``kill -USR1 <pid>`` print every thread's Python stack to stderr.
+
+    (Re)installed on every call: native libraries can take ``SIGUSR1`` over
+    without chaining. Triton's bundled LLVM does when it loads, during the
+    first training iteration, installing its "info signal" handler (it only
+    prints compile progress, so taking the signal back is harmless). Not
+    installed when a Python-level ``SIGUSR1`` handler exists. Returns whether
+    this process now dumps its stack on the signal (so peers know it is safe to
+    send).
+    """
+    if _STACK_DUMP_SIGNAL is None:
+        return False
+    sig = _STACK_DUMP_SIGNAL
+    try:
+        if signal.getsignal(sig) not in (signal.SIG_DFL, None):
+            return False  # a Python handler owns SIGUSR1
+        # faulthandler.register() alone does not call sigaction again for a signal it
+        # already registered, so unregister first. Block the signal in this thread
+        # meanwhile; a pending one is delivered (and dumped) right after.
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {sig})
+        try:
+            faulthandler.unregister(sig)
+            faulthandler.register(sig, all_threads=True, chain=False)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+    except (ValueError, RuntimeError, OSError, AttributeError):
+        return False
+    return True
+
+
+def status_path(status_dir: str, rank: int) -> str:
+    return osp.join(status_dir, f'rank_{rank:05d}.json')
+
+
+def publish_status(status_dir: str, rank: int, phase: str, round_tag: str = '') -> None:
+    """Record where this rank is (host, pid, phase); best effort, never raises."""
+    info = {
+        'rank': rank,
+        'host': socket.gethostname(),
+        'pid': os.getpid(),
+        'phase': phase,
+        'round': round_tag,
+        'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'stack_dump': enable_stack_dumps(),
+    }
+    try:
+        os.makedirs(status_dir, exist_ok=True)
+        touch(status_path(status_dir, rank), json.dumps(info))
+    except OSError:
+        pass
+
+
+def read_status(status_dir: str, rank: int) -> dict[str, Any] | None:
+    try:
+        with open(status_path(status_dir, rank)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def request_stack_dump(info: dict[str, Any]) -> bool:
+    """Send ``SIGUSR1`` to a peer on this host that registered a stack dump."""
+    if _STACK_DUMP_SIGNAL is None or not info.get('stack_dump'):
+        return False
+    if info.get('host') != socket.gethostname():
+        return False
+    try:
+        os.kill(int(info['pid']), _STACK_DUMP_SIGNAL)
+    except (ProcessLookupError, PermissionError, KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
+def log_stderr(msg: str) -> None:
+    """Visible on every rank (mmengine's logger only prints errors on rank > 0)."""
+    print(f'[accelerate eval] {msg}', file=sys.stderr, flush=True)
 
 
 class ParquetResultBridge:
@@ -303,8 +413,16 @@ class ParquetResultBridge:
             rank (e.g. ``<work_dir>/accelerate_eval/val_<timestamp>_<step>``).
         rank: This process's rank.
         world_size: Number of processes.
-        timeout_s: How long to wait for the other ranks / the metric.
+        timeout_s: How long the other ranks wait for rank 0's metric.
         keep_files: Keep the parts after the metric is computed (debugging).
+        arrive_timeout_s: How long to wait for a rank that has not written its
+            part yet (it is still training, saving or validating). Defaults
+            to ``timeout_s``.
+        status_dir: Directory of the ranks' status files (see
+            :func:`publish_status`); enables the peer report / stack dump on
+            an arrival timeout.
+        round_tag: This round's tag, compared with the peers' status.
+        report_every_s: Interval of the "still waiting" messages on stderr.
     """
 
     def __init__(
@@ -314,12 +432,20 @@ class ParquetResultBridge:
         world_size: int,
         timeout_s: float = 4 * 3600.0,
         keep_files: bool = False,
+        arrive_timeout_s: float | None = None,
+        status_dir: str | None = None,
+        round_tag: str = '',
+        report_every_s: float = 300.0,
     ) -> None:
         self.root = root
         self.rank = rank
         self.world_size = world_size
         self.timeout_s = timeout_s
         self.keep_files = keep_files
+        self.arrive_timeout_s = timeout_s if arrive_timeout_s is None else arrive_timeout_s
+        self.status_dir = status_dir
+        self.round_tag = round_tag
+        self.report_every_s = report_every_s
 
     def _part(self, r: int) -> str:
         return osp.join(self.root, f'part_{r:05d}.parquet')
@@ -331,6 +457,60 @@ class ParquetResultBridge:
     @property
     def _error(self) -> str:
         return osp.join(self.root, 'error.txt')
+
+    def _missing_ranks(self, missing: list[str]) -> list[int]:
+        ranks = []
+        for p in missing:
+            name = osp.basename(p)
+            if name.startswith('part_'):
+                ranks.append(int(name[len('part_') :].split('.')[0]))
+        return ranks
+
+    def _report_slow(self, missing: list[str], elapsed_s: float, what: str) -> None:
+        log_stderr(
+            f'rank {self.rank}: still {what} after {elapsed_s / 60:.0f} min; '
+            f'missing {[osp.basename(p) for p in missing[:4]]}'
+        )
+
+    def _peer_report(self, missing: list[str]) -> str:
+        """Explain the missing ranks and make the ones on this host dump their stack."""
+        lines = []
+        for r in self._missing_ranks(missing):
+            info = read_status(self.status_dir, r) if self.status_dir else None
+            head = (
+                f'rank {r} never reached this evaluation round ({self.round_tag}): it is '
+                'still in training, checkpoint saving or the validation loop, not in the metric.'
+            )
+            if info is None:
+                lines.append(f'{head} No status file from it.')
+                continue
+            where = (
+                f'last status: phase={info.get("phase")} round={info.get("round") or "-"} '
+                f'at {info.get("time")} on {info.get("host")} pid {info.get("pid")}'
+            )
+            dumped = request_stack_dump(info)
+            pid = info.get('pid')
+            how = (
+                f'Its Python stack was dumped to its stderr (SIGUSR1 sent to pid {pid}).'
+                if dumped
+                else f'Run `kill -USR1 {pid}` on {info.get("host")} to dump its stack'
+                ' (if it registered faulthandler), or py-spy dump.'
+            )
+            lines.append(f'{head} {where}. {how}')
+        if lines:
+            time.sleep(2.0)  # let the peer's dump reach the log before this rank exits
+        return '\n'.join(lines)
+
+    def _wait_arrival(self, paths: Callable[[], list[str]], what: str) -> None:
+        wait_for(
+            paths,
+            self.arrive_timeout_s,
+            what,
+            error_file=self._error if self.rank != 0 else None,
+            on_slow=lambda m, t: self._report_slow(m, t, what),
+            report_every_s=self.report_every_s,
+            on_timeout=self._peer_report,
+        )
 
     def run(
         self,
@@ -344,9 +524,8 @@ class ParquetResultBridge:
 
         if self.rank == 0:
             try:
-                wait_for(
+                self._wait_arrival(
                     lambda: [self._part(r) + '.done' for r in range(self.world_size)],
-                    self.timeout_s,
                     'waiting for the result parts of all ranks',
                 )
                 table = pa.concat_tables(
@@ -375,11 +554,20 @@ class ParquetResultBridge:
             touch(self._metrics + '.done')
             return metrics
 
+        # First rank 0's arrival (its part; it deletes the part once the metrics
+        # are written, so metrics.done also counts), then its metric computation.
+        self._wait_arrival(
+            lambda: [] if osp.exists(self._metrics + '.done') else [self._part(0) + '.done'],
+            'waiting for rank 0 to finish validating',
+        )
+        what = 'waiting for rank 0 to compute the metrics'
         wait_for(
             lambda: [self._metrics + '.done'],
             self.timeout_s,
-            'waiting for rank 0 to compute the metrics',
+            what,
             error_file=self._error,
+            on_slow=lambda m, t: self._report_slow(m, t, what),
+            report_every_s=self.report_every_s,
         )
         row = pq.read_table(self._metrics).to_pylist()[0]
         metrics = decode(row['spec'], row['arrays'])
@@ -402,10 +590,13 @@ class ParquetResultBridge:
 
 
 def sweep_old_rounds(parent: str, keep: str) -> None:
-    """Rank 0: remove leftover round directories of earlier evaluations."""
+    """Rank 0: remove leftover round directories of earlier evaluations.
+
+    Names starting with ``_`` (the ranks' status directory) are kept.
+    """
     if not osp.isdir(parent):
         return
     for name in os.listdir(parent):
         path = osp.join(parent, name)
-        if path != keep and osp.isdir(path):
+        if path != keep and not name.startswith('_') and osp.isdir(path):
             shutil.rmtree(path, ignore_errors=True)

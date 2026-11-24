@@ -8,7 +8,10 @@ import copy
 import os
 import os.path as osp
 import shutil
+import sys
+import traceback
 from collections.abc import Callable, Iterator, Mapping
+from typing import TypeVar
 
 import torch
 import torch.distributed as dist
@@ -32,7 +35,10 @@ from .accelerator_builder import (
     build_accelerator,
     resolve_settings,
 )
+from .hooks import StackDumpHook
 from .model_wrapper import AccelerateModelWrapper
+
+_T = TypeVar('_T')
 
 _LOOP_SWAP = {
     'ValLoop': 'mmrotate.AccelerateValLoop',
@@ -164,6 +170,8 @@ class AccelerateRunner(Runner):
         if self.accel_settings.zero_stage == 3:
             kwargs['custom_hooks'] = _swap_ema_hooks(kwargs.get('custom_hooks', None))
         super().__init__(*args, **kwargs)
+        if not any(isinstance(h, StackDumpHook) for h in self.hooks):
+            self.register_hook(StackDumpHook())
 
         s = self.accel_settings
         state = self.accelerator.state
@@ -378,6 +386,37 @@ class AccelerateRunner(Runner):
             self.logger.warning(
                 f'no DeepSpeed state found for {filename}: weights resumed, optimizer state reset'
             )
+
+
+def run_and_end(runner: AccelerateRunner, step: Callable[[], _T]) -> _T:
+    """Run ``step`` (``runner.train`` / ``runner.test``), then end the accelerator.
+
+    On an error in a multi-process run the process prints the traceback and
+    exits at once instead of calling ``accelerator.end_training()``: that
+    destroys the NCCL process group, which blocks for as long as a peer rank is
+    alive but hung (typically the rank this error is about, e.g. the result
+    bridge's arrival timeout). Python prints the traceback only after the
+    teardown, so the run would hang silently. Exiting lets the launcher see the
+    failure and stop the other ranks.
+    """
+    accelerator = runner.accelerator
+    try:
+        out = step()
+    except BaseException:
+        if accelerator.num_processes > 1:
+            sys.stdout.flush()
+            print(
+                f'[rank{accelerator.process_index}] error; exiting without the NCCL teardown '
+                '(it blocks while another rank is hung):',
+                file=sys.stderr,
+            )
+            traceback.print_exc()
+            sys.stderr.flush()
+            os._exit(1)
+        accelerator.end_training()
+        raise
+    accelerator.end_training()
+    return out
 
 
 def _prune_states(out_dir: str) -> None:

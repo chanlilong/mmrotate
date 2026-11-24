@@ -120,7 +120,8 @@ The recipe can also be changed from the command line:
 | `data_order` | `auto` | Cross-rank dataset order check. `auto` re-sorts only if the ranks disagree, `always` always sorts, `never` raises instead of sorting, `off` disables the check. |
 | `eval.bridge` | `parquet` | How validation and test results are gathered: `parquet` (files) or `mmengine` (stock `collect_results`). |
 | `eval.dir` | work_dir | Directory for the bridge files. It must be on a filesystem every node sees. |
-| `eval.timeout_minutes` | 240 | How long ranks wait for each other's parts, and for rank 0's metric. |
+| `eval.timeout_minutes` | 240 | How long the other ranks wait for rank 0 to compute the metric. |
+| `eval.arrive_timeout_minutes` | 60 | How long a rank waits for a rank that has not written its part yet (still training, saving a checkpoint or validating). Keep it short: a rank that never arrives is hung, not slow. |
 | `eval.keep_files` | false | Keep the parquet parts, for debugging. |
 
 `train_dataloader.batch_size` stays per GPU, as with mmengine DDP. The global
@@ -419,6 +420,23 @@ Only the gathering changes:
    while rank 0 computes. If rank 0 fails, it writes `error.txt` and the other
    ranks raise with its traceback instead of hanging. The round directory is
    deleted once every rank has read the metrics.
+5. A rank that never arrives is reported, not waited on for hours. Waiting
+   for a rank's part is bounded by `eval.arrive_timeout_minutes`, separately
+   from rank 0's metric (`eval.timeout_minutes`). Every rank writes
+   `accelerate_eval/_ranks/rank_<r>.json` (host, pid, phase, round) and
+   registers a `SIGUSR1` stack dump (`faulthandler`). On an arrival timeout the
+   waiting rank names the missing rank and its last phase, and, if it runs on
+   the same host, sends it `SIGUSR1` so its Python stack appears in its stderr
+   (the slurm log) before the job stops. While waiting, ranks print a
+   `[accelerate eval] ... still waiting` line to stderr every 5 minutes.
+   The runner's `StackDumpHook` re-installs the `SIGUSR1` handler during
+   training, because Triton's bundled LLVM takes the signal over when it loads
+   (first iteration).
+6. When a rank raises in a multi-process run, `tools/accelerate/train.py` and
+   `test.py` print the traceback and exit without `accelerator.end_training()`.
+   Destroying the NCCL process group blocks while another rank is alive but
+   hung, and Python prints the traceback only after that, so the run would
+   otherwise hang without any error.
 
 The result is the same as a single-process evaluation. On the same checkpoint,
 the stock `tools/test.py` and `tools/accelerate/test.py` print identical
@@ -518,6 +536,7 @@ whole so the result stays the same.
 | ZeRO-3 on 2+ GPUs: NCCL timeout with one rank in `_REDUCE_SCATTER_BASE` (`independent_gradient_partition_epilogue`) and the other in `_ALLGATHER_BASE` (`pre_sub_module_backward_function`) | Data-dependent backward: a module ran backward on one rank only. Not solved yet for RTMDet; use ZeRO-2 or DDP. Set `timeout_minutes` low (e.g. 10) while debugging so a hang fails fast. |
 | `the ranks hold different samples` | Ranks read different annotation files: different data roots, or `indices` / filters applied to an unsorted listing. |
 | validation `TimeoutError ... still missing part_000NN` | That rank died or is still evaluating, or `eval.dir` is not shared across nodes. Raise `eval.timeout_minutes` for very slow metrics. |
+| validation hangs with one rank in `result_bridge.py` `wait_for`; the round directory holds only `part_00001.parquet(.done)`; the log ends at `Saving checkpoint at N` | Rank 0 never reached evaluation: it is stuck after the checkpoint save (rank 1 skips the `master_only` save and runs ahead into validation). Not an NCCL wait if it outlives `timeout_minutes`. The `arrive_timeout_minutes` error carries rank 0's last phase and its stack dump (stderr); during a hang, `kill -USR1 <rank-0 pid>` prints the stack by hand. |
 | `KeyError: unknown accelerator keys` | A typo in the `accelerator:` block; the message lists the valid keys. |
 | `MuonAdamW cannot run under DeepSpeed ZeRO` | Use DDP (remove `accelerator.deepspeed`). |
 | many `_pytree ... register_constant` warnings at start-up | Import-time warnings from torchao in this image. Harmless. |

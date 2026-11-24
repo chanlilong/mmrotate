@@ -24,6 +24,8 @@ from mmdet.utils import register_all_modules as register_all_modules_mmdet
 from mmengine.config import Config, DictAction
 
 from mmrotate.accelerate import AccelerateRunner
+from mmrotate.accelerate.accelerate_runner import run_and_end
+from mmrotate.accelerate.result_bridge import enable_stack_dumps
 from mmrotate.utils import register_all_modules
 
 
@@ -73,6 +75,7 @@ def load_config(args: argparse.Namespace) -> Config:
 
 def main() -> None:
     args = parse_args()
+    enable_stack_dumps()  # `kill -USR1 <pid>` prints this rank's Python stack
     register_all_modules_mmdet(init_default_scope=False)
     register_all_modules(init_default_scope=False)
     cfg = load_config(args)
@@ -82,10 +85,7 @@ def main() -> None:
             f'tools/accelerate/train.py runs AccelerateRunner, config asks {runner_type}'
         )
     runner = AccelerateRunner.from_cfg(cfg)
-    try:
-        runner.train()
-    finally:
-        runner.accelerator.end_training()
+    run_and_end(runner, runner.train)
 
 
 if __name__ == '__main__':

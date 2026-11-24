@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +20,13 @@ from mmrotate.accelerate.result_bridge import (
     ParquetResultBridge,
     decode,
     encode,
+    publish_status,
+    read_status,
     results_to_table,
+    sweep_old_rounds,
     table_to_results,
+    wait_for,
+    write_table,
 )
 
 
@@ -190,3 +198,158 @@ def test_bridge_timeout_names_missing_ranks(tmp_path: Path) -> None:
     bridge = ParquetResultBridge(str(tmp_path), 0, 2, timeout_s=1)
     with pytest.raises(TimeoutError, match='part_00001'):
         bridge.run([([1], [0])], lambda merged: {})
+
+
+def test_rank0_never_arriving_fails_on_the_arrival_timeout(tmp_path: Path) -> None:
+    """Rank 1 must not sit out the long metric timeout when rank 0 never shows up."""
+    status = tmp_path / '_ranks'
+    publish_status(str(status), 0, 'val:ready', 'old_round')
+    bridge = ParquetResultBridge(
+        str(tmp_path / 'round'),
+        1,
+        2,
+        timeout_s=3600,
+        arrive_timeout_s=0.5,
+        status_dir=str(status),
+        round_tag='this_round',
+    )
+    start = time.monotonic()
+    with pytest.raises(TimeoutError) as info:
+        bridge.run([([1], [1])], lambda merged: {})
+    assert time.monotonic() - start < 30
+    msg = str(info.value)
+    assert 'part_00000' in msg and 'rank 0 never reached this evaluation round' in msg
+    assert 'phase=val:ready' in msg and 'round=old_round' in msg
+
+
+def test_slow_metric_still_gets_the_full_timeout(tmp_path: Path) -> None:
+    """Once rank 0 has arrived, a metric slower than arrive_timeout_s is fine."""
+    out: dict[int, object] = {}
+    errors: list[BaseException] = []
+
+    def compute(merged: list[list[object]]) -> dict:
+        time.sleep(1.5)
+        return {'n': len(merged[0])}
+
+    def run(rank: int) -> None:
+        try:
+            bridge = ParquetResultBridge(
+                str(tmp_path / 'round'), rank, 2, timeout_s=30, arrive_timeout_s=0.5
+            )
+            out[rank] = bridge.run([([rank], [rank])], compute)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=run, args=(r,)) for r in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert out[0] == out[1] == {'n': 2}
+
+
+def test_rank0_done_before_rank1_polls(tmp_path: Path) -> None:
+    """Rank 0 deletes its part after the metric; metrics.done counts as arrived."""
+    root = tmp_path / 'round'
+    root.mkdir()
+    part1 = root / 'part_00001.parquet'
+    write_table(results_to_table([([1], [1])], 1), str(part1))
+    (root / 'part_00001.parquet.done').touch()
+    r0 = ParquetResultBridge(str(root), 0, 2, timeout_s=5)
+    assert r0.run([([0], [0])], lambda merged: {'n': len(merged[0])}) == {'n': 2}
+    assert not (root / 'part_00000.parquet.done').exists()
+    r1 = ParquetResultBridge(str(root), 1, 2, timeout_s=5, arrive_timeout_s=0.5)
+    assert r1.run([([1], [1])], lambda merged: {}) == {'n': 2}
+
+
+def test_wait_for_reports_progress(tmp_path: Path) -> None:
+    calls: list[tuple[list[str], float]] = []
+    missing = str(tmp_path / 'never')
+    with pytest.raises(TimeoutError, match='extra text'):
+        wait_for(
+            lambda: [missing],
+            0.6,
+            'testing',
+            poll_s=0.05,
+            on_slow=lambda m, t: calls.append((m, t)),
+            report_every_s=0.1,
+            on_timeout=lambda m: 'extra text',
+        )
+    assert len(calls) >= 3 and all(m == [missing] for m, _ in calls)
+
+
+def test_sweep_keeps_status_dir(tmp_path: Path) -> None:
+    publish_status(str(tmp_path / '_ranks'), 0, 'val:ready')
+    (tmp_path / 'val_old').mkdir()
+    (tmp_path / 'val_new').mkdir()
+    sweep_old_rounds(str(tmp_path), keep=str(tmp_path / 'val_new'))
+    assert sorted(os.listdir(tmp_path)) == ['_ranks', 'val_new']
+    info = read_status(str(tmp_path / '_ranks'), 0)
+    assert info is not None and info['pid'] == os.getpid() and info['phase'] == 'val:ready'
+
+
+@pytest.mark.skipif(not hasattr(os, 'kill') or sys.platform == 'win32', reason='POSIX signals')
+def test_timeout_dumps_the_missing_peers_stack(tmp_path: Path) -> None:
+    """The waiting rank makes a stuck rank 0 on the same host print its Python stack."""
+    status = tmp_path / '_ranks'
+    code = (
+        'import sys, time\n'
+        'from mmrotate.accelerate.result_bridge import publish_status\n'
+        'def stuck_in_checkpoint_saving():\n'
+        '    time.sleep(60)\n'
+        f'publish_status({str(status)!r}, 0, "val:ready", "r1")\n'
+        'print("ready", flush=True)\n'
+        'stuck_in_checkpoint_saving()\n'
+    )
+    child = subprocess.Popen(
+        [sys.executable, '-c', code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        for line in child.stdout:  # skip import-time noise (DeepSpeed's accelerator warning)
+            if line.strip() == 'ready':
+                break
+        else:
+            pytest.fail('child exited before publishing its status')
+        bridge = ParquetResultBridge(
+            str(tmp_path / 'round'),
+            1,
+            2,
+            timeout_s=3600,
+            arrive_timeout_s=0.5,
+            status_dir=str(status),
+            round_tag='r1',
+        )
+        with pytest.raises(TimeoutError, match=f'SIGUSR1 sent to pid {child.pid}'):
+            bridge.run([([1], [1])], lambda merged: {})
+    finally:
+        child.kill()
+        _, err = child.communicate(timeout=30)
+    assert 'stuck_in_checkpoint_saving' in err, err
+
+
+@pytest.mark.skipif(not hasattr(os, 'kill') or sys.platform == 'win32', reason='POSIX signals')
+def test_stack_dump_survives_a_native_handler_takeover() -> None:
+    """Triton's LLVM replaces the SIGUSR1 handler in C; re-enabling must take it back."""
+    code = (
+        'import ctypes, os, signal, time\n'
+        'from mmrotate.accelerate.result_bridge import enable_stack_dumps\n'
+        'assert enable_stack_dumps()\n'
+        'libc = ctypes.CDLL(None)\n'
+        "libc.signal(signal.SIGUSR1, 1)  # SIG_IGN behind Python's back, like LLVM does\n"
+        'os.kill(os.getpid(), signal.SIGUSR1); time.sleep(0.2)\n'
+        'print("ignored", flush=True)\n'
+        'assert enable_stack_dumps()\n'
+        'def after_takeover():\n'
+        '    os.kill(os.getpid(), signal.SIGUSR1); time.sleep(0.2)\n'
+        'after_takeover()\n'
+    )
+    proc = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert 'ignored' in proc.stdout
+    assert proc.stderr.count('Current thread') == 1, proc.stderr
+    assert 'after_takeover' in proc.stderr
