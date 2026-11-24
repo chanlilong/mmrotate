@@ -1,11 +1,12 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 """``DynamicSoftLabelAssigner`` with memory bounded by GT slicing.
 
-``assign`` is adapted from mmdet 3.3.0
+``assign`` and ``dynamic_k_matching`` are adapted from mmdet 3.3.0
 ``mmdet/models/task_modules/assigners/dynamic_soft_label_assigner.py``
 (Apache-2.0, OpenMMLab). The (prior, GT) matrices are built over slices of GTs
 (see ``chunked_cost.py``); the candidate mask, cost, IoUs and dynamic-k matching
-are the same, so the assignment is the same as mmdet's.
+are the same, so the assignment is the same as mmdet's. Dynamic-k matching
+selects the positives of all GTs with one ``topk`` instead of one per GT.
 """
 
 from __future__ import annotations
@@ -127,3 +128,50 @@ class ChunkedDynamicSoftLabelAssigner(DynamicSoftLabelAssigner):
         max_overlaps = assigned_gt_inds.new_full((num_bboxes,), -INF, dtype=torch.float32)
         max_overlaps[valid_mask] = matched_pred_ious
         return AssignResult(num_gt, assigned_gt_inds, max_overlaps, labels=assigned_labels)
+
+    def dynamic_k_matching(
+        self, cost: Tensor, pairwise_ious: Tensor, num_gt: int, valid_mask: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """mmdet's dynamic-k matching (SimOTA) without the Python loop over GTs.
+
+        mmdet takes the ``dynamic_k`` cheapest priors of each GT with one
+        ``topk`` (and one host sync) per GT. Here a single ``topk`` over the
+        whole cost matrix returns the cheapest priors of every GT, sorted, and
+        each GT keeps its first ``dynamic_k``. A GT whose k-th and (k+1)-th
+        costs are equal has no unique k cheapest priors; those GTs go through
+        mmdet's per-GT ``topk``, so the result is mmdet's in every case.
+        """
+        matching_matrix = torch.zeros_like(cost, dtype=torch.uint8)
+        # select candidate topk ious for dynamic-k calculation
+        num_priors = cost.size(0)
+        candidate_topk = min(self.topk, pairwise_ious.size(0))
+        topk_ious, _ = torch.topk(pairwise_ious, candidate_topk, dim=0)
+        # calculate dynamic k for each gt
+        dynamic_ks = torch.clamp(topk_ious.sum(0).int(), min=1)
+
+        # One more row than the largest k, to see a tie at the cut.
+        rows = min(int(dynamic_ks.max()) + 1, num_priors)
+        values, pos_idx = torch.topk(cost, rows, dim=0, largest=False)
+        gt_idx = torch.arange(num_gt, device=cost.device)
+        cut = dynamic_ks.long().clamp(max=rows - 1)
+        tie = (values[cut - 1, gt_idx] == values[cut, gt_idx]) & (dynamic_ks < num_priors)
+        take = torch.arange(rows, device=cost.device)[:, None] < dynamic_ks[None, :]
+        take &= ~tie[None, :]
+        matching_matrix[pos_idx[take], gt_idx.expand(rows, -1)[take]] = 1
+        for g in tie.nonzero().flatten().tolist():
+            _, tie_idx = torch.topk(cost[:, g], k=dynamic_ks[g], largest=False)
+            matching_matrix[:, g][tie_idx] = 1
+        del topk_ious, values, pos_idx, take
+
+        prior_match_gt_mask = matching_matrix.sum(1) > 1
+        if prior_match_gt_mask.sum() > 0:
+            cost_min, cost_argmin = torch.min(cost[prior_match_gt_mask, :], dim=1)
+            matching_matrix[prior_match_gt_mask, :] *= 0
+            matching_matrix[prior_match_gt_mask, cost_argmin] = 1
+        # get foreground mask inside box and center prior
+        fg_mask_inboxes = matching_matrix.sum(1) > 0
+        valid_mask[valid_mask.clone()] = fg_mask_inboxes
+
+        matched_gt_inds = matching_matrix[fg_mask_inboxes, :].argmax(1)
+        matched_pred_ious = (matching_matrix * pairwise_ious).sum(1)[fg_mask_inboxes]
+        return matched_pred_ious, matched_gt_inds

@@ -17,6 +17,7 @@ from mmcv.cnn import build_norm_layer
 from mmcv.cnn.bricks import DropPath
 from torch import Tensor, nn
 
+from .bn_checkpoint import batch_norms, checkpoint_bn
 from .ms_deform_attn import MSDeformAttn
 
 NormLayer = Callable[[int], nn.Module]
@@ -261,7 +262,10 @@ class CTI_toC(nn.Module):  # noqa: N801 - keep upstream name
                 cffn_ratio=cffn_ratio,
                 drop=drop,
                 drop_path=drop_path,
-                with_cp=with_cp,
+                # ``forward`` already checkpoints the whole interaction. A second
+                # checkpoint inside it would keep its own inputs (two normalised
+                # copies of the CNN tokens) alive until backward.
+                with_cp=False,
                 msda_backend=msda_backend,
             )
 
@@ -500,8 +504,15 @@ class CTIBlock(nn.Module):
         )
         self.use_CTI_toV = use_CTI_toV
         self.use_CTI_toC = use_CTI_toC
+        self.with_cp = with_cp
         if use_CTI_toV:
             self.mrfp = MRFP(dim, hidden_features=int(dim * 0.5))
+
+    def _mrfp(self, c: Tensor, H: int, W: int) -> Tensor:
+        if self.with_cp and c.requires_grad:
+            # MRFP holds BatchNorm: checkpoint without updating its statistics twice.
+            return checkpoint_bn(lambda t: self.mrfp(t, H, W), c, bns=batch_norms(self.mrfp))
+        return self.mrfp(c, H, W)
 
     def forward(
         self,
@@ -516,7 +527,7 @@ class CTIBlock(nn.Module):
         """``run_blocks`` maps spatial ViT tokens through this stage's blocks."""
         if self.use_CTI_toV:
             ref, shapes, starts = deform_inputs_only_one(x, H * 16, W * 16)
-            c = self.mrfp(c, H, W)
+            c = self._mrfp(c, H, W)
             c1 = c[:, : H * W * 4, :]
             c2 = c[:, H * W * 4 : H * W * 5, :]
             c3 = c[:, H * W * 5 :, :]

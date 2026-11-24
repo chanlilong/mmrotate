@@ -306,3 +306,28 @@ def test_bf16_autocast_and_memory_cuda() -> None:
         peaks.append(torch.cuda.max_memory_allocated() - base)
     assert_same(results[1], results[0])
     assert peaks[1] * 4 < peaks[0], peaks
+
+
+@pytest.mark.parametrize('device', DEVICES)
+@pytest.mark.parametrize('shape', [(1, 1), (5, 3), (200, 30), (40, 300)])
+def test_dynamic_k_matching_matches_mmdet_with_ties(device: str, shape: tuple[int, int]) -> None:
+    """The single-topk dynamic-k matching against mmdet's loop over GTs, on cost
+    matrices full of equal and infinite entries (ties at the cut)."""
+    ref = DynamicSoftLabelAssigner(**DSL_KW)
+    chunked = ChunkedDynamicSoftLabelAssigner(**DSL_KW)
+    num_valid, num_gt = shape
+    for seed in range(8):
+        g = torch.Generator().manual_seed(seed)
+        levels = (2, 5, 1000)[seed % 3]  # few distinct costs -> many ties
+        cost = torch.randint(0, levels, shape, generator=g).float()
+        cost[torch.rand(shape, generator=g) < 0.3] = float('inf')
+        ious = torch.rand(shape, generator=g) * (seed % 4 + 1) / 4
+        cost, ious = cost.to(device), ious.to(device)
+        outs = []
+        for assigner in (ref, chunked):
+            valid = torch.ones(num_valid + 3, dtype=torch.bool, device=device)
+            valid[:3] = False
+            matched = assigner.dynamic_k_matching(cost.clone(), ious.clone(), num_gt, valid)
+            outs.append((*matched, valid))
+        for a, b in zip(outs[1], outs[0], strict=True):
+            assert torch.equal(a, b)
