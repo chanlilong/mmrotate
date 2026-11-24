@@ -14,6 +14,10 @@ from mmrotate.utils import register_all_modules
 CONFIGS = {
     'cradio/cradiov4-h-comer_rtmdet-3x-dota_ms.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
     'cradio/cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),
+    'cradio/cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-3x-dota_ms.yaml': (
+        'CRADIOv4CoMer',
+        [4, 8, 16, 32],
+    ),
     'cradio/cradiov4-h_rtmdet-3x-dota_ms.yaml': ('CRADIOv4', [8, 16, 32]),
     'cradio/cradiov4-h-comer_rtmdet-proxy.yaml': ('CRADIOv4CoMer', [8, 16, 32]),
     'cradio/cradiov4-h-comer-lora_rtmdet-p2-3x-dota_ms.yaml': ('CRADIOv4CoMer', [4, 8, 16, 32]),

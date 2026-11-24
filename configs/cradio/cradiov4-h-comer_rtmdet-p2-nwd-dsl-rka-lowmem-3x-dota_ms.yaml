@@ -1,0 +1,39 @@
+# Low-memory training recipe for cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-3x-dota_ms.yaml:
+# the same model (same parameters, state-dict keys and maths), set up to fit
+# 4 images per 46 GB GPU instead of 2.
+#
+# One RTX 6000 Ada (46 GB), bf16, synthetic 1024x1024 batches with 200 GTs per
+# image (tools/cradio/bench_train_step.py), peak = max_memory_allocated:
+#   base config, batch 2:  1.71 s/step (1.17 img/s), 30.9 GB peak; batch 4: out of memory
+#   this config, batch 2:  1.79 s/step (1.12 img/s), 19.7 GB peak
+#   this config, batch 4:  3.52 s/step (1.14 img/s), 32.8 GB peak
+# The checkpointed neck costs about 4 % of the step; it is what makes batch 4 fit.
+# Run with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True so the reserved
+# memory stays close to the peak.
+_base_: ./cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-3x-dota_ms.yaml
+
+model:
+  neck:
+    # CSPNeXtPAFPN with gradient checkpointing on the stride 4 / 8 layers,
+    # which run at 1280-2560 channels on 256x256 / 128x128 maps.
+    type: CheckpointedCSPNeXtPAFPN
+    cp_levels: [0, 1]
+  bbox_head:
+    # Same head; its targets are built without a Python loop over the GTs.
+    type: FastTargetsRotatedRTMDetSepBNHead
+
+# batch_size = (N GPUs) x (4 samples per GPU). The learning rate is the base
+# config's (set for 2 samples per GPU): rescale it if you keep the GPU count.
+train_dataloader:
+  batch_size: 4
+  num_workers: 8
+
+custom_hooks:
+  - type: mmdet.NumClassCheckHook
+  # ExpMomentumEMA that shares the frozen ViT with the model instead of
+  # keeping (and averaging) a second 2.5 GB copy of it.
+  - type: EMAHook
+    ema_type: FrozenSharedExpMomentumEMA
+    momentum: 0.0002
+    update_buffers: true
+    priority: 49

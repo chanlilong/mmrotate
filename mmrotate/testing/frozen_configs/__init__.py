@@ -41,6 +41,9 @@ SNAPSHOTS: tuple[str, ...] = (
         'cradiov4-h-comer_rtmdet-3x-dota_ms.yaml',
         'cradiov4-h-comer_rtmdet-dcfl-3x-dota_ms.yaml',
         'cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml',
+        'cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-3x-dota_ms.yaml',
+        'cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-lowmem-3x-dota_ms.yaml',
+        'cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-lowmem-proxy.yaml',
         'cradiov4-h-comer_rtmdet-proxy.yaml',
         'cradiov4-h_rtmdet-3x-dota_ms.yaml',
         'cradiov4-h-vitdet_rtmdet-3x-dota_ms.yaml',
@@ -101,6 +104,7 @@ FULL: frozenset[str] = frozenset(
         'rotated_rtmdet/rotated_rtmdet_tiny-3x-dota.py',
         'cradio/cradiov4-h-comer_rtmdet-3x-dota_ms.yaml',
         'cradio/cradiov4-h-comer_rtmdet-proxy.yaml',
+        'cradio/cradiov4-h-comer_rtmdet-p2-nwd-dsl-rka-lowmem-proxy.yaml',
         'soda_dinov3/convnext-t-dinov3_rtmdet-p2-6e-soda.yaml',
     }
 )

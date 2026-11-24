@@ -1,0 +1,18 @@
+# P2 (stride 4) C-RADIOv4-H CoMer RTMDet with the hybrid NWD-RKA + dynamic
+# soft-label assigner: cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml with the
+# assigner of cradiov4-h-comer_rtmdet-nwd-dsl-rka-3x-dota_ms.yaml. The assigner
+# is chunked over GTs (chunk_budget_mb), so dense images do not blow up the
+# 87k priors x GTs matrices of the stride 4 head.
+_base_: ./cradiov4-h-comer_rtmdet-p2-3x-dota_ms.yaml
+
+model:
+  train_cfg:
+    assigner:
+      _delete_: true
+      type: RankingDynamicSoftLabelAssigner
+      topk: 13
+      rka_topk: 3
+      rka_prior_scale: 4.0
+      rka_calculator: &nwd {type: RBboxNWD2D, constant: 12.8}
+      iou_calculator: *nwd
+      chunk_budget_mb: 256
