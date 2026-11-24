@@ -244,4 +244,57 @@ def test_two_processes_gloo(tmp_path: Path) -> None:
         assert r['val_ordered'] == 1.0
     assert runs[0]['pred_sum'] == runs[1]['pred_sum']
     assert runs[0]['weight'] == runs[1]['weight']  # DDP kept the replicas in sync
-    assert not os.listdir(osp.join(work, 'accelerate_eval')), 'bridge files left behind'
+    # Only the ranks' status files (host / pid / phase) stay between rounds.
+    left = os.listdir(osp.join(work, 'accelerate_eval'))
+    assert left == ['_ranks'], f'bridge files left behind: {left}'
+
+
+class _FakeAccelerator:
+    def __init__(self, num_processes: int) -> None:
+        self.num_processes = num_processes
+        self.process_index = num_processes - 1
+        self.ended = 0
+
+    def end_training(self) -> None:
+        self.ended += 1
+
+
+class _FakeRunner:
+    def __init__(self, num_processes: int) -> None:
+        self.accelerator = _FakeAccelerator(num_processes)
+
+
+def _boom() -> None:
+    raise TimeoutError('rank 0 never reached this evaluation round')
+
+
+def test_run_and_end_single_process_raises_after_teardown() -> None:
+    from mmrotate.accelerate.accelerate_runner import run_and_end
+
+    runner = _FakeRunner(1)
+    assert run_and_end(runner, lambda: 7) == 7  # type: ignore[arg-type]
+    with pytest.raises(TimeoutError):
+        run_and_end(runner, _boom)  # type: ignore[arg-type]
+    assert runner.accelerator.ended == 2
+
+
+def test_run_and_end_multi_process_exits_without_teardown(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A hung peer would block the NCCL teardown; print and exit instead."""
+    from mmrotate.accelerate import accelerate_runner
+
+    class _ExitError(Exception):
+        pass
+
+    def fake_exit(code: int) -> None:
+        raise _ExitError(code)
+
+    monkeypatch.setattr(accelerate_runner.os, '_exit', fake_exit)
+    runner = _FakeRunner(2)
+    with pytest.raises(_ExitError):
+        accelerate_runner.run_and_end(runner, _boom)  # type: ignore[arg-type]
+    assert runner.accelerator.ended == 0
+    err = capsys.readouterr().err
+    assert '[rank1] error; exiting without the NCCL teardown' in err
+    assert 'TimeoutError: rank 0 never reached this evaluation round' in err

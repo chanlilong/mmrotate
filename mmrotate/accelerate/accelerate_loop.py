@@ -27,10 +27,13 @@ from mmrotate.registry import LOOPS
 
 from .result_bridge import (
     ParquetResultBridge,
+    publish_status,
     results_to_table,
     sweep_old_rounds,
     table_to_results,
 )
+
+STATUS_DIR = '_ranks'  # under <bridge_root>/accelerate_eval; kept by sweep_old_rounds
 
 
 def rank_indices(dataloader: DataLoader) -> list[int]:
@@ -54,8 +57,10 @@ class BridgedEvaluator(Evaluator):
         metrics: The metrics of the evaluator being replaced.
         bridge_root: Parent directory of the per-round bridge directories.
         stage: ``'val'`` or ``'test'`` (part of the round directory name).
-        timeout_s: Rendezvous timeout.
+        timeout_s: How long the other ranks wait for rank 0's metric.
         keep_files: Keep the parquet parts (debugging).
+        arrive_timeout_s: How long to wait for a rank that has not reached the
+            evaluation yet. Defaults to ``timeout_s``.
     """
 
     def __init__(
@@ -65,16 +70,28 @@ class BridgedEvaluator(Evaluator):
         stage: str,
         timeout_s: float,
         keep_files: bool = False,
+        arrive_timeout_s: float | None = None,
     ) -> None:
         super().__init__(list(metrics))
         self.bridge_root = bridge_root
         self.stage = stage
         self.timeout_s = timeout_s
         self.keep_files = keep_files
+        self.arrive_timeout_s = arrive_timeout_s
         self._indices: list[int] = []
         self._cursor = 0
         self._result_index: list[list[int]] = [[] for _ in self.metrics]
         self._round_tag = ''
+
+    @property
+    def status_dir(self) -> str:
+        return osp.join(self.bridge_root, 'accelerate_eval', STATUS_DIR)
+
+    def publish(self, phase: str) -> None:
+        """Record this rank's phase for the peers' timeout report (multi-rank only)."""
+        rank, world_size = get_dist_info()
+        if world_size > 1:
+            publish_status(self.status_dir, rank, f'{self.stage}:{phase}', self._round_tag)
 
     def begin(self, indices: list[int], round_tag: str) -> None:
         """Start a round: ``indices`` are the dataset indices this rank will process."""
@@ -84,6 +101,7 @@ class BridgedEvaluator(Evaluator):
         self._round_tag = round_tag
         for metric in self.metrics:
             metric.results.clear()
+        self.publish('loop_started')
 
     def process(
         self,
@@ -154,13 +172,24 @@ class BridgedEvaluator(Evaluator):
                 # Same merge (dedup + dataset order) without the files.
                 merged = table_to_results(results_to_table(per_metric, 0), len(self.metrics))
                 return compute(merged)
+            self.publish('evaluating')
             parent = osp.join(self.bridge_root, 'accelerate_eval')
             root = osp.join(parent, f'{self.stage}_{self._round_tag}')
             if rank == 0:
                 sweep_old_rounds(parent, keep=root)
-            bridge = ParquetResultBridge(root, rank, world_size, self.timeout_s, self.keep_files)
+            bridge = ParquetResultBridge(
+                root,
+                rank,
+                world_size,
+                self.timeout_s,
+                self.keep_files,
+                arrive_timeout_s=self.arrive_timeout_s,
+                status_dir=self.status_dir,
+                round_tag=self._round_tag,
+            )
             metrics = bridge.run(per_metric, compute)
             bridge.cleanup()
+            self.publish('done')
             return metrics
         finally:
             for metric in self.metrics:
@@ -189,9 +218,14 @@ class _BridgedLoopMixin:
             stage=self.stage,
             timeout_s=float(eval_cfg.get('timeout_minutes', 240)) * 60.0,
             keep_files=bool(eval_cfg.get('keep_files', False)),
+            arrive_timeout_s=float(eval_cfg.get('arrive_timeout_minutes', 60)) * 60.0,
         )
         if meta is not None:
             self.evaluator.dataset_meta = meta
+        # Publishes host / pid (and installs the SIGUSR1 stack dump) before
+        # training starts, so a peer can report a rank that hangs before its
+        # first evaluation round.
+        self.evaluator.publish('ready')
 
     def _begin_round(self) -> None:
         if isinstance(self.evaluator, BridgedEvaluator):

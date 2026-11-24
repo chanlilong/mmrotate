@@ -6,11 +6,13 @@ from __future__ import annotations
 import itertools
 
 import torch
-from mmengine.hooks import DistSamplerSeedHook, EMAHook
+from mmengine.hooks import DistSamplerSeedHook, EMAHook, Hook
 from mmengine.model import is_model_wrapper
 from mmengine.runner import Runner
 
 from mmrotate.registry import HOOKS
+
+from .result_bridge import enable_stack_dumps
 
 
 @HOOKS.register_module()
@@ -21,6 +23,67 @@ class AccelerateDistSamplerSeedHook(DistSamplerSeedHook):
     stock hook already finds the ``DefaultSampler`` and calls ``set_epoch`` on
     it; nothing else is needed.
     """
+
+
+@HOOKS.register_module()
+class StackDumpHook(Hook):
+    """Keep ``kill -USR1 <pid>`` printing this rank's Python stack.
+
+    :class:`AccelerateRunner` registers it. Native libraries that load lazily
+    (Triton's LLVM, during the first iteration) replace the ``SIGUSR1``
+    handler; this re-installs it at the start of training, over the first
+    ``warmup_iters`` iterations, every ``interval`` iterations after that, and
+    around every epoch / evaluation. Re-installing is a single ``sigaction``.
+    """
+
+    priority = 'VERY_HIGH'
+
+    def __init__(self, warmup_iters: int = 20, interval: int = 500) -> None:
+        self.warmup_iters = warmup_iters
+        self.interval = interval
+
+    def before_train(self, runner: Runner) -> None:
+        enable_stack_dumps()
+
+    def after_train_iter(
+        self,
+        runner: Runner,
+        batch_idx: int,
+        data_batch: dict | tuple | list | None = None,
+        outputs: dict | None = None,
+    ) -> None:
+        it = runner.iter
+        if it < self.warmup_iters or it % self.interval == 0:
+            enable_stack_dumps()
+
+    def after_train_epoch(self, runner: Runner) -> None:
+        enable_stack_dumps()
+
+    def before_val(self, runner: Runner) -> None:
+        enable_stack_dumps()
+
+    def after_val_iter(
+        self,
+        runner: Runner,
+        batch_idx: int,
+        data_batch: dict | tuple | list | None = None,
+        outputs: object = None,
+    ) -> None:
+        if batch_idx < self.warmup_iters:
+            enable_stack_dumps()
+
+    def before_test(self, runner: Runner) -> None:
+        enable_stack_dumps()
+
+    def after_test_iter(
+        self,
+        runner: Runner,
+        batch_idx: int,
+        data_batch: dict | tuple | list | None = None,
+        outputs: object = None,
+    ) -> None:
+        if batch_idx < self.warmup_iters:
+            enable_stack_dumps()
 
 
 @HOOKS.register_module()

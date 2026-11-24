@@ -22,7 +22,7 @@ from .accelerator_builder import (
     resolve_settings,
 )
 from .data_order import ConsistentOrderDataset
-from .hooks import AccelerateDistSamplerSeedHook, ZeRO3EMAHook
+from .hooks import AccelerateDistSamplerSeedHook, StackDumpHook, ZeRO3EMAHook
 from .model_wrapper import AccelerateModelWrapper
 from .result_bridge import ParquetResultBridge
 
@@ -37,6 +37,7 @@ __all__ = [
     'BridgedEvaluator',
     'ConsistentOrderDataset',
     'ParquetResultBridge',
+    'StackDumpHook',
     'ZeRO3EMAHook',
     'build_accelerator',
     'build_deepspeed_config',
